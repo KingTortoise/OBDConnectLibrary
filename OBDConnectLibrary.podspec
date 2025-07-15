@@ -30,6 +30,4 @@ Pod::Spec.new do |s|
     'INFO_PLIST_FILE' => '$(SRCROOT)/Pods/Target Support Files/OBDConnectLibrary/OBDConnectLibrary-Info.plist'
   }
   
-  s.resources = 'Resources/Info.plist'
-  
 end
