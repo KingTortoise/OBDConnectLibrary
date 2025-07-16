@@ -15,34 +15,22 @@ class BluetoothPortManage: IPortManage {
         bluetoothManage = BluetoothManage()
     }
     
-    func open(context: Any, name: String) async -> Bool {
-        let connectResult = await bluetoothManage.open(name: name)
-        switch connectResult {
-        case .success:
-            return true
-        case .failure(_):
-            return false
-        }
+    func open(context: Any, name: String) async -> Result<Void, ConnectError> {
+        return await bluetoothManage.open(name: name)
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Bool {
-        let writeResult = await bluetoothManage.write(data: data, timeout: timeout)
-        switch writeResult {
-        case .success:
-            return true
-        case .failure(_):
-            return false
-        }
+    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+        return await bluetoothManage.write(data: data, timeout: timeout)
     }
     
-    func read(timeout: TimeInterval) async -> Data? {
+    func read(timeout: TimeInterval) async -> Result<Data?, ConnectError> {
         let readResult = await bluetoothManage.read(timeout: timeout)
         switch readResult {
         case .success(let data):
             bluetoothManage.clenReceiveInfo()
-            return data
-        case .failure(_):
-            return nil
+            return .success(data)
+        case .failure(let error):
+            return .failure(error)
         }
     }
     

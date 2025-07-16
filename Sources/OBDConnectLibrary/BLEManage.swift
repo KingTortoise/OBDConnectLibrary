@@ -132,7 +132,7 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 self.connectedPeripheral = nil
                 self.state = .disconnected
             }
-            return .failure(.connectionFailed(nil))
+            return .failure(.connectionFailed(NSError(domain: "BLEManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No status change notification received."])))
         }
         guard await waitForReadWrite() else {
             syncQueue.sync {
@@ -141,14 +141,12 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 self.characteristicForReadWrite = nil
                 self.state = .disconnected
             }
-            return .failure(.connectionFailed(nil))
+            return .failure(.connectionFailed(NSError(domain: "BLEManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No characteristics found."])))
         }
         syncQueue.sync {
             self.state = .connected
         }
         return .success(())
-            
-        
     }
     
     func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {

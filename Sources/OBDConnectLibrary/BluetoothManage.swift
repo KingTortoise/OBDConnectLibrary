@@ -87,7 +87,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         }
         // 等待线程的RunLoop准备就绪
         guard await waitForStreamThreadReady() else {
-            return .failure(.connectionFailed(nil))
+            return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."])))
         }
         
         syncQueue.sync {
@@ -98,7 +98,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             inputStream = session.inputStream
             outputStream = session.outputStream
             guard let inputStream = inputStream, let outputStream = outputStream else {
-                return .failure(.connectionFailed(nil))
+                return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."])))
             }
             inputStream.delegate = self
             inputStream.schedule(in: self.streamRunLoop, forMode: .common)
@@ -108,7 +108,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             outputStream.open()
             return .success(())
         } else {
-            return .failure(.noCompatibleDevices)
+            return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "EASession init failed."])))
         }
     }
     
@@ -151,6 +151,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
     func read(timeout: TimeInterval) async -> Result<Data, ConnectError> {
         let currentState = syncQueue.sync {state}
         guard currentState == .connected, let inputStream = inputStream, isOpened() else {
+            clenReceiveInfo()
             return .failure(.notConnected)
         }
      
@@ -164,6 +165,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             if elapsedTime >= timeout {
                 result = .failure(.sendTimeout)
                 receiveStatus = false
+                clenReceiveInfo()
                 break
             }
             let count = inputStream.read(&buffer, maxLength: bufferSize)
@@ -173,8 +175,10 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             if self.receiveBuffer.count > 0 {
                 if let endData = self.receiveBuffer.last {
                     let endChar = Unicode.Scalar(endData)
-                    result = .success(self.receiveBuffer)
-                    receiveStatus = false
+                    if endChar == ">" {
+                        result = .success(self.receiveBuffer)
+                        receiveStatus = false
+                    }
                 }
             }
         }

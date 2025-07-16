@@ -82,11 +82,12 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
     }
     
     func openChannel(name: String, timeout: TimeInterval) async -> Result<Void, ConnectError> {
-        // 先在syncQueue中检查状态（避免并发修改）
-        let currentState = syncQueue.sync { state }
-        // 检查当前状态
-        guard currentState == .disconnected else {
-            return .failure(.connectionFailed(nil))
+        let connectState = syncQueue.sync { state }
+        if connectState == .connected {
+            return .success(())
+        }
+        if connectState == .connecting {
+            return .failure(.connecting)
         }
         
         let info = name.components(separatedBy: ":")
@@ -98,7 +99,7 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
         if let port = UInt32(info[1]) {
             // 等待线程的RunLoop准备就绪
             guard await waitForStreamThreadReady() else {
-                return .failure(.connectionFailed(nil))
+                return .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."])))
             }
             self.syncQueue.sync { self.state = .connecting }
             var readStream: Unmanaged<CFReadStream>?
@@ -106,9 +107,7 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
             CFStreamCreatePairWithSocketToHost(kCFAllocatorDefault, host, port, &readStream, &writeStream)
             guard let input = readStream?.takeRetainedValue(), let output = writeStream?.takeRetainedValue()  else {
                 self.syncQueue.sync { self.state = .disconnected }
-                return .failure(.connectionFailed(nil))
-                
-                                    
+                return .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."])))
             }
             self.inputStream = input
             self.outputStream = output
@@ -120,7 +119,7 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
             self.inputStream?.open()
             self.outputStream?.open()
             let connectSuccess = await waitForInputStream(timeout: timeout)
-            return connectSuccess ?  .success(()) :  .failure(.connectionFailed(nil))
+            return connectSuccess ?  .success(()) :  .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No status change notification received."])))
         } else {
             return .failure(.invalidName)
         }           

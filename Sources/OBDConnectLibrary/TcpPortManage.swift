@@ -14,34 +14,22 @@ class TcpPortManage: IPortManage {
         tcpManage = TcpManage()
     }
     
-    func open(context: Any, name: String) async -> Bool {
-        let connectResult = await tcpManage.openChannel(name: name, timeout: 5.0) // 10秒连接超时
-        switch connectResult {
-        case .success:
-            return true
-        case .failure(_):
-            return false
-        }
+    func open(context: Any, name: String) async -> Result<Void, ConnectError> {
+        return await tcpManage.openChannel(name: name, timeout: 5.0) // 10秒连接超时
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Bool {
-        let writeResult = await tcpManage.write(data: data, timeout: timeout)
-        switch writeResult {
-        case .success:
-            return true
-        case .failure(_):
-            return false
-        }
+    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+        return await tcpManage.write(data: data, timeout: timeout)
     }
     
-    func read(timeout: TimeInterval) async -> Data? {
+    func read(timeout: TimeInterval) async -> Result<Data?, ConnectError> {
         let readResult = await tcpManage.read(timeout: timeout)
         switch readResult {
         case .success(let data):
             tcpManage.clenReceiveInfo()
-            return data
-        case .failure(_):
-            return nil
+            return .success(data)
+        case .failure(let error):
+            return .failure(error)
         }
     }
     

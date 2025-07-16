@@ -8,10 +8,10 @@
 import Foundation
 
 public enum ConnectError: Error, LocalizedError {
+    case btUnEnable
     case invalidName
     case connectionTimeout
     case connecting
-    case btUnEnable
     case noCompatibleDevices
     case sendTimeout
     case receiveTimeout
@@ -24,19 +24,19 @@ public enum ConnectError: Error, LocalizedError {
     
     public var errorDescription: String? {
         switch self {
-        case .invalidName: return "参数错误"
-        case .connectionTimeout: return "连接超时"
-        case .connecting: return "正在连接中"
-        case .btUnEnable: return "蓝牙当前不可用"
-        case .noCompatibleDevices: return "无符合条件的设备"
-        case .sendTimeout: return "发送超时"
-        case .receiveTimeout: return "接收超时"
-        case .connectionFailed(let error): return "连接失败: \(error?.localizedDescription ?? "未知错误")"
-        case .sendFailed(let error): return "发送失败: \(error?.localizedDescription ?? "未知错误")"
-        case .receiveFailed(let error): return "接收失败: \(error?.localizedDescription ?? "未知错误")"
-        case .invalidData: return "无效数据"
-        case .notConnected: return "未连接到设备"
-        case .unknown: return "未知错误"
+        case .invalidName: return "Invalid input parameter"
+        case .connectionTimeout: return "Connection timeout"
+        case .connecting: return "Connecting"
+        case .btUnEnable: return "Bluetooth is currently unavailable"
+        case .noCompatibleDevices: return "No matching devices"
+        case .sendTimeout: return "Send timeout"
+        case .receiveTimeout: return "Receive timeout"
+        case .connectionFailed(let error): return "Connection failed: \(error?.localizedDescription ?? "unknown error")"
+        case .sendFailed(let error): return "Send failed: \(error?.localizedDescription ?? "unknown error")"
+        case .receiveFailed(let error): return "Receive failed: \(error?.localizedDescription ?? "unknown error")"
+        case .invalidData: return "Invalid Data"
+        case .notConnected: return "Not connected to device"
+        case .unknown: return "Unknown error"
         }
     }
 }

@@ -8,9 +8,9 @@
 import Foundation
 
 // 端口管理协议
-protocol IPortManage {
-    func open(context: Any, name: String) async -> Bool
-    func write(data: Data, timeout: TimeInterval) async -> Bool
-    func read(timeout: TimeInterval) async -> Data?
+public protocol IPortManage {
+    func open(context: Any, name: String) async -> Result<Void, ConnectError>
+    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError>
+    func read(timeout: TimeInterval) async -> Result<Data?, ConnectError>
     func close()
 }

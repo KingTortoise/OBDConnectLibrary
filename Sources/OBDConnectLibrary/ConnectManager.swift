@@ -10,29 +10,31 @@ import CoreBluetooth
 import Combine
 
 // 连接类型枚举
-enum ConnectType: Int {
+public enum ConnectType: Int {
     case WIFI = 0
     case BT = 1
     case BLE = 2
 }
 
-struct VlContext {
-    var type: Int
-    var name: String?
-    var isOpen: Bool
-    var port: IPortManage?
+public struct VlContext {
+    public var type: Int
+    public var name: String?
+    public var isOpen: Bool
+    public var port: IPortManage?
 }
 
 @available(macOS 10.15, *)
 public class ConnectManager {
     // 全局连接上下文
-    var globalContext: VlContext?
+    public var globalContext: VlContext?
         
     // 主协程作用域
     private var mainScope: AnyCancellable?
     
+    public init() {}
+    
     // 初始化管理器
-    func initManager(type: Int, context: Any) async throws -> Bool {
+    public func initManager(type: Int, context: Any) async throws -> Bool {
         if let globalContext = globalContext {
             if globalContext.type == type && globalContext.isOpen {
                 return true
@@ -53,7 +55,7 @@ public class ConnectManager {
         }
         
         guard let manager = manager else {
-            throw NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unsupported connection type"])
+            throw NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid type."])
         }
         let context = VlContext(
             type: type,
@@ -67,46 +69,56 @@ public class ConnectManager {
     }
     
     // 连接
-    func connect(name: String, context: Any) async throws -> Bool {
+    public func connect(name: String, context: Any) async -> Result<Void, ConnectError> {
         guard let port = globalContext?.port else {
-            throw NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])
+            return .failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
         }
         
-        let result = await port.open(context: context, name: name)
-        globalContext?.isOpen = result
-        return result
+        let connectSuccess = await port.open(context: context, name: name)
+        switch connectSuccess {
+        case .success():
+            globalContext?.isOpen = true
+            return .success(())
+            
+        case .failure(let error):
+            globalContext?.isOpen = false
+            return .failure(error)
+        }
     }
     
     // 写入数据
-    func write(data: Data, timeout: TimeInterval) async throws -> Bool {
+    public func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
         guard let port = globalContext?.port else {
-            throw NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])
+            return .failure(.sendFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
         }
         
         return  await port.write(data: data, timeout: timeout)
     }
     
     // 接收响应
-    func read(timeout: TimeInterval) async throws -> String? {
-        // 从异步读取获取数据，添加超时处理
-        guard let data = await globalContext?.port?.read(timeout: timeout) else {
-            return nil
+    public func read(timeout: TimeInterval) async -> Result<String?, ConnectError>{
+        let readSuccess = await globalContext?.port?.read(timeout: timeout)
+        switch readSuccess {
+        case .success(let data):
+            if data != nil {
+                let result = String(data: data!, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\r", with: "")
+                    .replacingOccurrences(of: "\n", with: "")
+                    .replacingOccurrences(of: ">", with: "")
+                return ((result?.isEmpty) != nil) ? .success(nil) : .success(result)
+            } else {
+                return .success(nil)
+            }
+        case .failure(let error):
+            return .failure(error)
+        case .none:
+            return .success(nil)
         }
-        
-        // 转换数据为字符串并处理
-        guard let result = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\r", with: "")
-            .replacingOccurrences(of: "\n", with: "")
-            .replacingOccurrences(of: ">", with: "")else {
-            return nil
-        }
-        
-        return result.isEmpty ? nil : result
     }
     
     // 关闭连接
-    func close() {
+    public func close() {
         globalContext?.port?.close()
         globalContext = nil
     }
