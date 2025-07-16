@@ -27,10 +27,10 @@ public enum BluetoothPermissionStatus {
 }
 
 /// 权限变更回调
-typealias BluetoothPermissionCallback = (CBManagerState) -> Void
+public typealias BluetoothPermissionCallback = (CBManagerState) -> Void
 
 /// 蓝牙权限管理类
-@objc public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
+public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
     static let shared = BluetoothPermissionManager()
     private var centralManager: CBCentralManager?
     private var permissonCallback: BluetoothPermissionCallback?
@@ -44,7 +44,7 @@ typealias BluetoothPermissionCallback = (CBManagerState) -> Void
         centralManager = CBCentralManager(delegate: self, queue: .main)
     }
     
-    func checkAndRequestPermission(callback: @escaping BluetoothPermissionCallback){
+    public func checkAndRequestPermission(callback: @escaping BluetoothPermissionCallback){
         let status = checkPermission()
         switch status {
         case .unauthorized, .unknown:
@@ -84,7 +84,7 @@ typealias BluetoothPermissionCallback = (CBManagerState) -> Void
         }
     }
     
-    private func notifyCallbacks(status: CBManagerState) {
+    public func notifyCallbacks(status: CBManagerState) {
         DispatchQueue.main.async {
             if let callback = self.permissonCallback {
                 callback(status)
@@ -92,7 +92,7 @@ typealias BluetoothPermissionCallback = (CBManagerState) -> Void
         }
     }
 
-    @objc public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let status = checkPermission()
         notifyCallbacks(status: status)
     }
