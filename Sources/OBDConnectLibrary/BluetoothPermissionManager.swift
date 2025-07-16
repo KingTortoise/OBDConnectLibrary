@@ -92,7 +92,7 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
         }
     }
 
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let status = checkPermission()
         notifyCallbacks(status: status)
     }
