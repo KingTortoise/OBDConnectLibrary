@@ -31,9 +31,9 @@ public typealias BluetoothPermissionCallback = (CBManagerState) -> Void
 
 /// 蓝牙权限管理类
 public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
-    static let shared = BluetoothPermissionManager()
-    private var centralManager: CBCentralManager?
-    private var permissonCallback: BluetoothPermissionCallback?
+    public static let shared = BluetoothPermissionManager()
+    public var centralManager: CBCentralManager?
+    public var permissonCallback: BluetoothPermissionCallback?
     
     public override init() {
         super.init()
