@@ -35,12 +35,12 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
     private var centralManager: CBCentralManager?
     private var permissonCallback: BluetoothPermissionCallback?
     
-    private override init() {
+    public override init() {
         super.init()
         setupManagers()
     }
     
-    private func setupManagers() {
+    public func setupManagers() {
         centralManager = CBCentralManager(delegate: self, queue: .main)
     }
     
@@ -56,7 +56,7 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
     }
     
     
-    private func checkPermission() -> CBManagerState {
+    public func checkPermission() -> CBManagerState {
         /// 从 iOS 13 开始，传统蓝牙和 BLE 的权限状态统一通过CBManager.authorization获取
         if #available(iOS 13.1, *) {
             if let central = centralManager {
@@ -77,7 +77,7 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
         }
     }
     
-    private func triggerPermissionRequest() {
+    public func triggerPermissionRequest() {
         // 初始化或重新初始化 CBCentralManager 触发权限请求
         if centralManager == nil {
             centralManager = CBCentralManager(delegate: self, queue: .main)
