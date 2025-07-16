@@ -24,7 +24,7 @@ struct VlContext {
 }
 
 @available(macOS 10.15, *)
-class ConnectManager {
+public class ConnectManager {
     // 全局连接上下文
     var globalContext: VlContext?
         

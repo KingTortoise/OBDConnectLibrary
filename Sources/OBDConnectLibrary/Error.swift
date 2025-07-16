@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum ConnectError: Error, LocalizedError {
+public enum ConnectError: Error, LocalizedError {
     case invalidName
     case connectionTimeout
     case connecting
@@ -22,7 +22,7 @@ enum ConnectError: Error, LocalizedError {
     case notConnected
     case unknown
     
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .invalidName: return "参数错误"
         case .connectionTimeout: return "连接超时"

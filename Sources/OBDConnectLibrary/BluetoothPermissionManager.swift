@@ -10,13 +10,13 @@ import CoreBluetooth
 import ExternalAccessory
 
 /// 蓝牙权限类型
-enum BluetoothPermissionType {
+public enum BluetoothPermissionType {
     case ble                // 低功耗蓝牙
     case classic            // 传统蓝牙
 }
 
 /// 蓝牙权限状态
-enum BluetoothPermissionStatus {
+public enum BluetoothPermissionStatus {
     case authorized         // 已授权
     case denied             // 已拒绝
     case restricted         // 受限制
@@ -30,7 +30,7 @@ enum BluetoothPermissionStatus {
 typealias BluetoothPermissionCallback = (CBManagerState) -> Void
 
 /// 蓝牙权限管理类
-class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
+public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
     static let shared = BluetoothPermissionManager()
     private var centralManager: CBCentralManager?
     private var permissonCallback: BluetoothPermissionCallback?
