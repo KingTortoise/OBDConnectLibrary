@@ -2,7 +2,7 @@
 # OBDConnectLibrary.podspec
 Pod::Spec.new do |s|
   s.name             = 'OBDConnectLibrary'
-  s.version          = '1.0.1'
+  s.version          = '1.0.2'
   s.summary          = 'A Swift library for OBD communication.'
   s.description      = <<-DESC
                         OBDConnectLibrary provides a simplified API for interacting
@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
                        DESC
   s.homepage         = 'https://github.com/KingTortoise/OBDConnectLibrary'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
-  s.author           = { 'wenwujin' => '810270355@email.com' }
+  s.author           = { 'wenwujin' => '810270355@qq.com' }
   s.source           = { :git => 'https://github.com/KingTortoise/OBDConnectLibrary.git', :tag => s.version.to_s }
 
   # 平台支持
