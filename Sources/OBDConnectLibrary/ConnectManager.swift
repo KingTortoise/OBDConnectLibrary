@@ -106,7 +106,8 @@ public class ConnectManager {
                     .replacingOccurrences(of: "\r", with: "")
                     .replacingOccurrences(of: "\n", with: "")
                     .replacingOccurrences(of: ">", with: "")
-                return ((result?.isEmpty) != nil) ? .success(nil) : .success(result)
+                guard let result = result else { return .success(nil) }
+                return result.isEmpty  ? .success(nil) : .success(result)
             } else {
                 return .success(nil)
             }
