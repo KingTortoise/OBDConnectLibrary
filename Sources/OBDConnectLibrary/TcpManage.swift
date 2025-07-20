@@ -63,7 +63,7 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
         }, timeout: timeout)
     }
     
-    func waitForReadData(timeout: TimeInterval = 5.0) async -> Bool {
+    func waitForReadData(timeout: TimeInterval = 10.0) async -> Bool {
         await wait(unit: { [weak self] in
             guard let self = self else { return false }
             return self.syncQueue.sync {
@@ -191,7 +191,10 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
         while input.hasBytesAvailable {
             let bytesRead = input.read(&buffer, maxLength: bufferSize)
             if bytesRead > 0 {
-                receiveBuffer.append(buffer, count: bytesRead)
+                let receivedData = Data(bytes: buffer, count: bytesRead)
+                syncQueue.async { [weak self] in
+                    self?.receiveBuffer.append(receivedData)
+                }
             }
         }
     }
@@ -225,27 +228,24 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
     
     /// ##StreamDelegate
     func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
-        syncQueue.async { [weak self] in
-            guard let self = self else { return }
-            switch eventCode {
-            case .openCompleted:
-                // 连接成功（两个流都打开才算完成）
-                if aStream is InputStream, self.inputStream?.streamStatus == .open, self.outputStream?.streamStatus == .open {
-                    self.state = .connected
-                }
-                                
-            case .hasBytesAvailable:
-                //  读取数据并处理
-                if let input = aStream as? InputStream {
-                    self.checkForReceivedData(input: input)
-                }
-            case .errorOccurred:
-                self.state = .disconnected
-            case .endEncountered:
-                self.state = .disconnected
-            default:
-                break
+        switch eventCode {
+        case .openCompleted:
+            // 连接成功（两个流都打开才算完成）
+            if aStream is InputStream, self.inputStream?.streamStatus == .open, self.outputStream?.streamStatus == .open {
+                self.state = .connected
             }
+                            
+        case .hasBytesAvailable:
+            //  读取数据并处理
+            if let input = aStream as? InputStream {
+                self.checkForReceivedData(input: input)
+            }
+        case .errorOccurred, .endEncountered:
+            syncQueue.async { [weak self] in
+                self?.state = .disconnected
+            }
+        default:
+            break
         }
         
     }

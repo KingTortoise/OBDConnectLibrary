@@ -101,10 +101,11 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
                 return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."])))
             }
             inputStream.delegate = self
-            inputStream.schedule(in: self.streamRunLoop, forMode: .common)
+            inputStream.schedule(in: self.streamRunLoop, forMode: .default)
             inputStream.open()
             
-            outputStream.schedule(in: self.streamRunLoop, forMode: .common)
+            outputStream.delegate = self
+            outputStream.schedule(in: self.streamRunLoop, forMode: .default)
             outputStream.open()
             return .success(())
         } else {
@@ -148,41 +149,37 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         return result
     }
     
+    func waitForReadData(timeout: TimeInterval = 10.0) async -> Bool {
+        await wait(unit: { [weak self] in
+            guard let self = self else { return false }
+            return self.syncQueue.sync {
+                if self.receiveBuffer.count > 0 {
+                    if let endData = self.receiveBuffer.last {
+                        let endChar = Unicode.Scalar(endData)
+                        return endChar == ">"
+                    } else {
+                        return false
+                    }
+                } else {
+                    return false
+                }
+            }
+        }, timeout: timeout)
+    }
+    
     func read(timeout: TimeInterval) async -> Result<Data, ConnectError> {
         let currentState = syncQueue.sync {state}
         guard currentState == .connected, let inputStream = inputStream, isOpened() else {
             clenReceiveInfo()
             return .failure(.notConnected)
         }
-     
-        let bufferSize = 4096
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        let startTime = CFAbsoluteTimeGetCurrent()
-        var result:Result<Data, ConnectError> = .success(Data())
-        var receiveStatus = true
-        while receiveStatus {
-            let elapsedTime = CFAbsoluteTimeGetCurrent() - startTime
-            if elapsedTime >= timeout {
-                result = .failure(.sendTimeout)
-                receiveStatus = false
-                clenReceiveInfo()
-                break
-            }
-            let count = inputStream.read(&buffer, maxLength: bufferSize)
-            if count > 0 {
-                self.receiveBuffer.append(buffer, count: count)
-            }
-            if self.receiveBuffer.count > 0 {
-                if let endData = self.receiveBuffer.last {
-                    let endChar = Unicode.Scalar(endData)
-                    if endChar == ">" {
-                        result = .success(self.receiveBuffer)
-                        receiveStatus = false
-                    }
-                }
-            }
+        
+        guard await waitForReadData() else {
+            clenReceiveInfo()
+            return .failure(.receiveTimeout)
         }
-        return result
+        let result = syncQueue.sync {receiveBuffer}
+        return .success(result)
     }
     
     func clenReceiveInfo() {
@@ -199,11 +196,14 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
     func close() {
         syncQueue.async { [weak self] in
             guard let self = self else { return }
+            // 清理
+            self.inputStream?.delegate = nil
+            self.outputStream?.delegate = nil
             self.inputStream?.close()
-            self.inputStream?.remove(from: self.streamRunLoop!, forMode: .common)
+            self.inputStream?.remove(from: self.streamRunLoop!, forMode: .default)
             self.inputStream = nil
             self.outputStream?.close()
-            self.outputStream?.remove(from: self.streamRunLoop!, forMode: .common)
+            self.outputStream?.remove(from: self.streamRunLoop!, forMode: .default)
             self.outputStream = nil
             
             self.mSession = nil
@@ -212,5 +212,44 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             self.receiveBuffer.removeAll()
             self.state = .disconnected
         }
+    }
+    
+    private func checkForReceivedData(input: InputStream) {
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        
+        while input.hasBytesAvailable {
+            let bytesRead = input.read(&buffer, maxLength: bufferSize)
+            if bytesRead > 0 {
+                let receivedData = Data(bytes: buffer, count: bytesRead)
+                syncQueue.async { [weak self] in
+                    self?.receiveBuffer.append(receivedData)
+                }
+            }
+        }
+    }
+    
+    /// MARK: - StreamDelegate（处理流事件）
+    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        switch eventCode {
+        case .openCompleted:
+            // 连接成功（两个流都打开才算完成）
+            if aStream is InputStream, self.inputStream?.streamStatus == .open, self.outputStream?.streamStatus == .open {
+                self.state = .connected
+            }
+                            
+        case .hasBytesAvailable:
+            //  读取数据并处理
+            if let input = aStream as? InputStream {
+                self.checkForReceivedData(input: input)
+            }
+        case .errorOccurred, .endEncountered:
+            syncQueue.async { [weak self] in
+                self?.state = .disconnected
+            }
+        default:
+            break
+        }
+        
     }
 }
