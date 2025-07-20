@@ -118,32 +118,35 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         guard currentState == .connected, let outputStream = outputStream, outputStream.hasSpaceAvailable, isOpened() else {
             return .failure(.notConnected)
         }
-        var totalLength = data.count
+        let totalLength = data.count
         guard totalLength > 0 else {
             // 空数据视为发送成功
             return .success(())
         }
-        var i = 0
-        var buffer = [UInt8](data)
         let startTime = CFAbsoluteTimeGetCurrent()
         var result:Result<Void, ConnectError> = .success(())
+        var bytesSent = 0
         
-        while totalLength > 0 {
+        while bytesSent < totalLength  {
             let elapsedTime = CFAbsoluteTimeGetCurrent() - startTime
             if elapsedTime >= timeout {
-                result = .failure(.sendTimeout)
+                result =  .failure(.sendTimeout)
                 break
             }
-            let bytesWritten = outputStream.write(&buffer[i], maxLength: totalLength)
-            if bytesWritten < 0 {
-                result = .failure(.sendFailed(outputStream.streamError))
-                break;
+            let remainingLength = totalLength - bytesSent
+            let buffer = data.subdata(in: bytesSent..<totalLength)
+            let bytesWritten = buffer.withUnsafeBytes { bufferPtr in
+                outputStream.write(bufferPtr.baseAddress!.assumingMemoryBound(to: UInt8.self), maxLength: remainingLength)
             }
-            totalLength -= bytesWritten
-            i += bytesWritten
-            
-            if totalLength <= 0 {
-                result = .success(())
+            if bytesWritten > 0 {
+                bytesSent += bytesWritten
+                if bytesSent == totalLength {
+                    result =  .success(())
+                    break
+                }
+            } else if bytesWritten < 0 {
+                result = .failure(.sendFailed(outputStream.streamError))
+                break
             }
         }
         return result
