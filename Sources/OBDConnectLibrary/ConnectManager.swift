@@ -24,7 +24,11 @@ public struct VlContext {
 }
 
 @available(macOS 10.15, *)
-public class ConnectManager {
+public class ConnectManager: @unchecked Sendable {
+    
+    // 单例实例（全局唯一）
+    public static let shared = ConnectManager()
+    
     // 全局连接上下文
     public var globalContext: VlContext?
         
