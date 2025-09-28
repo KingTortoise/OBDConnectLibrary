@@ -14,6 +14,10 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
     private var outputStream: OutputStream?
     private var state: State = .disconnected
     private var receiveBuffer = Data()
+    
+    // 设备断开回调
+    var onDeviceDisconnect: (() -> Void)?
+    
     // 专用后台线程和 RunLoop（用于驱动 Stream 事件）
     private var streamThread: Thread!
     private var streamRunLoop: RunLoop!

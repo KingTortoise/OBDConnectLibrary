@@ -73,12 +73,12 @@ public class ConnectManager: @unchecked Sendable {
     }
     
     // 连接
-    public func connect(name: String, context: Any) async -> Result<Void, ConnectError> {
+    public func connect(name: String, peripheral: CBPeripheral?, context: Any) async -> Result<Void, ConnectError> {
         guard let port = globalContext?.port else {
             return .failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
         }
         
-        let connectSuccess = await port.open(context: context, name: name)
+        let connectSuccess = await port.open(context: context, name: name, peripheral: peripheral)
         switch connectSuccess {
         case .success():
             globalContext?.isOpen = true
@@ -99,17 +99,24 @@ public class ConnectManager: @unchecked Sendable {
         return  await port.write(data: data, timeout: timeout)
     }
     
+    // 获取数据流
+    @available(iOS 13.0, *)
+    public func receiveDataFlow() -> AsyncStream<Data> {
+        guard let port = globalContext?.port else {
+            return AsyncStream<Data> { continuation in
+                continuation.finish()
+            }
+        }
+        return port.receiveDataFlow()
+    }
+    
     // 接收响应
     public func read(timeout: TimeInterval) async -> Result<String?, ConnectError>{
         let readSuccess = await globalContext?.port?.read(timeout: timeout)
         switch readSuccess {
         case .success(let data):
             if data != nil {
-                let result = String(data: data!, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "\r", with: "")
-                    .replacingOccurrences(of: "\n", with: "")
-                    .replacingOccurrences(of: ">", with: "")
+                let result = String(data: data!, encoding: .utf8)
                 guard let result = result else { return .success(nil) }
                 return result.isEmpty  ? .success(nil) : .success(result)
             } else {
@@ -119,6 +126,56 @@ public class ConnectManager: @unchecked Sendable {
             return .failure(error)
         case .none:
             return .success(nil)
+        }
+    }
+    
+    // 开始扫描设备
+    public func startScan() async -> Bool {
+        guard let port = globalContext?.port else {
+            return false
+        }
+        
+        return await port.startScan()
+    }
+    
+    // 停止扫描设备
+    public func stopScan() {
+        globalContext?.port?.stopScan()
+    }
+    
+    
+    // 获取扫描结果数据流
+    @available(iOS 13.0, *)
+    public func getScanResultStream() -> AsyncStream<[Any]>? {
+        return globalContext?.port?.getScanResultStream()
+    }
+    
+    // 设置设备断开回调
+    public func setOnDeviceDisconnect(_ callback: @escaping () -> Void) {
+        globalContext?.port?.onDeviceDisconnect = callback
+    }
+    
+    // 设置蓝牙状态断开回调
+    public func setOnBluetoothDisconnect(_ callback: @escaping () -> Void) {
+        if let blePortManage = globalContext?.port as? BLEPortManage {
+            blePortManage.onBluetoothDisconnect = callback
+        }
+    }
+    
+    // 重连方法
+    public func reconnect() async -> Result<Void, ConnectError> {
+        guard let port = globalContext?.port else {
+            return .failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
+        }
+        
+        let reconnectResult = await port.reconnect()
+        switch reconnectResult {
+        case .success():
+            globalContext?.isOpen = true
+            return .success(())
+        case .failure(let error):
+            globalContext?.isOpen = false
+            return .failure(error)
         }
     }
     

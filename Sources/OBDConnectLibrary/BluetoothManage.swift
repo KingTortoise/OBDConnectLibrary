@@ -17,6 +17,9 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
     private var outputStream: OutputStream?
     private var receiveBuffer = Data()
     
+    // 设备断开回调
+    var onDeviceDisconnect: (() -> Void)?
+    
     // 专用后台线程和 RunLoop（用于驱动 Stream 事件）
     private var streamThread: Thread!
     private var streamRunLoop: RunLoop!
@@ -215,6 +218,28 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             self.receiveBuffer.removeAll()
             self.state = .disconnected
         }
+    }
+    
+    // 开始扫描蓝牙设备
+    func startScan() async -> Bool {
+        // 获取已连接的蓝牙设备
+        let connectedAccessories = accessoryManager.connectedAccessories
+        print("Found \(connectedAccessories.count) connected Bluetooth accessories")
+        
+        // 打印已连接的设备信息
+        for accessory in connectedAccessories {
+            print("Connected device: \(accessory.name ?? "Unknown")")
+            print("Protocol strings: \(accessory.protocolStrings)")
+        }
+        
+        // 对于 External Accessory 框架，我们只能获取已连接的设备
+        // 实际的"扫描"就是检查已连接的设备
+        return !connectedAccessories.isEmpty
+    }
+    
+    // 获取已连接的设备
+    func getConnectedAccessories() -> [EAAccessory] {
+        return accessoryManager.connectedAccessories
     }
     
     private func checkForReceivedData(input: InputStream) {
