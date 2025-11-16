@@ -4,7 +4,7 @@
 //
 //  Created by 金文武 on 2025/7/3.
 //
-import SwiftUI
+import Foundation
 // MARK: - 通用等待工具
 /// 通用等待函数：循环检查条件，直到满足或超时
 /// - Parameters:

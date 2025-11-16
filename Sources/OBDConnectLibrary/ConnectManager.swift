@@ -7,7 +7,6 @@
 
 import Foundation
 import CoreBluetooth
-import Combine
 
 // 连接类型枚举
 public enum ConnectType: Int {
@@ -31,9 +30,6 @@ public class ConnectManager: @unchecked Sendable {
     
     // 全局连接上下文
     public var globalContext: VlContext?
-        
-    // 主协程作用域
-    private var mainScope: AnyCancellable?
     
     public init() {}
     

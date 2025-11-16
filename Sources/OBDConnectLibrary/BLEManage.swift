@@ -5,7 +5,7 @@
 //  Created by 金文武 on 2025/7/1.
 //
 
-import SwiftUI
+import Foundation
 @preconcurrency
 import CoreBluetooth
 
