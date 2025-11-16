@@ -14,7 +14,7 @@ Pod::Spec.new do |s|
   s.source           = { :git => 'https://github.com/KingTortoise/OBDConnectLibrary.git', :tag => s.version.to_s }
 
   # 平台支持
-  s.ios.deployment_target = '14.0'
+  s.ios.deployment_target = '12.0'
   s.swift_version = '5.7'
 
   # 源代码位置

@@ -129,7 +129,7 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
         }           
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+    func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
         let (currentState, output) = syncQueue.sync { (state, outputStream) }
         guard currentState == .connected, let output = output else {
             return .failure(.notConnected)

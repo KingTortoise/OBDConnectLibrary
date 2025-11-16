@@ -14,7 +14,7 @@ public protocol IPortManage {
     var onDeviceDisconnect: (() -> Void)? { get set }
     
     func open(context: Any, name: String, peripheral: CBPeripheral?) async -> Result<Void, ConnectError>
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError>
+    func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError>
     func read(timeout: TimeInterval) async -> Result<Data?, ConnectError>
     func close()
     func startScan() async -> Bool
@@ -24,4 +24,11 @@ public protocol IPortManage {
     @available(iOS 13.0, *)
     func receiveDataFlow() -> AsyncStream<Data>
     func reconnect() async -> Result<Void, ConnectError>
+    func getBleDeviceInfo() async -> BleDeviceInfo?
+    
+    // BLE 写入信息变更回调
+    func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool)
+    
+    // BLE 描述符信息变更回调
+    func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool)
 }

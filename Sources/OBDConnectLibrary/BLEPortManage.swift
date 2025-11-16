@@ -30,7 +30,7 @@ class BLEPortManage: IPortManage {
             bleManage.onBluetoothDisconnect = newValue
         }
     }
-
+    
     init() {
         bleManage = BLEManage()
     }
@@ -40,8 +40,8 @@ class BLEPortManage: IPortManage {
         return await bleManage.open(peripheral: peripheral)
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
-        return await bleManage.write(data: data, timeout: timeout)
+    func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
+        return  bleManage.write(data: data, timeout: timeout)
     }
     
     // 获取数据流
@@ -82,7 +82,7 @@ class BLEPortManage: IPortManage {
         return AsyncStream<[Any]> { continuation in
             Task {
                 for await deviceInfos in stream {
-                    // 将 BLEDeviceInfo 转换为包含RSSI信息的字典
+                    // 将 BLEScannedDeviceInfo 转换为包含RSSI信息的字典
                     let devices: [Any] = deviceInfos.map { deviceInfo in
                         return [
                             "peripheral": deviceInfo.peripheral,
@@ -101,4 +101,20 @@ class BLEPortManage: IPortManage {
         return await bleManage.reconnect()
     }
     
+    func getBleDeviceInfo() async -> BleDeviceInfo? {
+        // 只有 BLE 连接才支持获取设备信息
+        return await bleManage.getBleDeviceInfo()
+    }
+    
+    // MARK: - BLE 信息变更回调实现
+    
+    func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        // 将调用转发给 BLEManage
+        bleManage.onChangeBleWriteInfo(characteristicUuid: characteristicUuid, propertyName: propertyName, isActive: isActive)
+    }
+    
+    func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        // 将调用转发给 BLEManage
+        bleManage.onChangeBleDescriptorInfo(characteristicUuid: characteristicUuid, propertyName: propertyName, isActive: isActive)
+    }
 }

@@ -29,8 +29,8 @@ class TcpPortManage: IPortManage {
         return await tcpManage.openChannel(name: name, timeout: 5.0) // 10秒连接超时
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
-        return await tcpManage.write(data: data, timeout: timeout)
+    func write(data: Data, timeout: TimeInterval)  -> Result<Void, ConnectError> {
+        return  tcpManage.write(data: data, timeout: timeout)
     }
     
     // 获取数据流
@@ -89,6 +89,21 @@ class TcpPortManage: IPortManage {
     func reconnect() async -> Result<Void, ConnectError> {
         // TcpPortManage 暂不支持重连，返回失败
         return .failure(.connectionFailed(NSError(domain: "TcpPortManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Reconnect not supported for TCP"])))
+    }
+    
+    func getBleDeviceInfo() async -> BleDeviceInfo? {
+        // TCP/WiFi 连接不支持 BLE 设备信息
+        return nil
+    }
+    
+    // MARK: - BLE 信息变更回调实现（TCP不支持，提供空实现）
+    
+    func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        print("⚠️ TCP连接不支持 BLE 写入信息变更")
+    }
+    
+    func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        print("⚠️ TCP连接不支持 BLE 描述符信息变更")
     }
     
 }

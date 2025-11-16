@@ -8,7 +8,7 @@
 import Foundation
 import CoreBluetooth
 
-class BluetoothPortManage: IPortManage {
+class BluetoothPortManage: IPortManage, @unchecked Sendable {
     
     private let bluetoothManage: BluetoothManage!
     
@@ -30,8 +30,8 @@ class BluetoothPortManage: IPortManage {
         return await bluetoothManage.open(name: name)
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
-        return await bluetoothManage.write(data: data, timeout: timeout)
+    func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
+        return  bluetoothManage.write(data: data, timeout: timeout)
     }
     
     // 获取数据流
@@ -73,9 +73,9 @@ class BluetoothPortManage: IPortManage {
         // 对于 External Accessory 框架，我们返回已连接的设备
         // 虽然不能主动扫描，但可以提供已连接设备的数据流
         return AsyncStream<[Any]> { continuation in
-            Task {
+            Task { @Sendable in
                 // 立即返回已连接的设备
-                let connectedAccessories = bluetoothManage.getConnectedAccessories()
+                let connectedAccessories = self.bluetoothManage.getConnectedAccessories()
                 continuation.yield(connectedAccessories)
                 
                 // 对于蓝牙，我们不需要持续监听，因为 External Accessory 框架
@@ -88,6 +88,21 @@ class BluetoothPortManage: IPortManage {
     func reconnect() async -> Result<Void, ConnectError> {
         // BluetoothPortManage 暂不支持重连，返回失败
         return .failure(.connectionFailed(NSError(domain: "BluetoothPortManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Reconnect not supported for Bluetooth"])))
+    }
+    
+    func getBleDeviceInfo() async -> BleDeviceInfo? {
+        // 蓝牙连接不支持 BLE 设备信息
+        return nil
+    }
+    
+    // MARK: - BLE 信息变更回调实现（蓝牙不支持，提供空实现）
+    
+    func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        print("⚠️ 蓝牙连接不支持 BLE 写入信息变更")
+    }
+    
+    func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        print("⚠️ 蓝牙连接不支持 BLE 描述符信息变更")
     }
     
 }

@@ -91,23 +91,35 @@ public class ConnectManager: @unchecked Sendable {
     }
     
     // 写入数据
-    public func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+    @inlinable
+    public func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
+        // 检查端口状态
         guard let port = globalContext?.port else {
             return .failure(.sendFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
         }
         
-        return  await port.write(data: data, timeout: timeout)
+        return port.write(data: data, timeout: timeout)
     }
     
     // 获取数据流
     @available(iOS 13.0, *)
     public func receiveDataFlow() -> AsyncStream<Data> {
+        
         guard let port = globalContext?.port else {
             return AsyncStream<Data> { continuation in
                 continuation.finish()
             }
         }
-        return port.receiveDataFlow()
+        let stream = port.receiveDataFlow()
+        
+        return AsyncStream<Data> { continuation in
+            Task {
+                for await data in stream {
+                    continuation.yield(data)
+                }
+                continuation.finish()
+            }
+        }
     }
     
     // 接收响应
@@ -177,6 +189,27 @@ public class ConnectManager: @unchecked Sendable {
             globalContext?.isOpen = false
             return .failure(error)
         }
+    }
+    
+    // 获取 BLE 设备信息
+    public func getBleDeviceInfo() async -> BleDeviceInfo? {
+        guard let port = globalContext?.port else {
+            return nil
+        }
+        
+        return await port.getBleDeviceInfo()
+    }
+    
+    // 更改 BLE 写入信息
+    public func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        // 调用端口管理器的实现
+        globalContext?.port?.onChangeBleWriteInfo(characteristicUuid: characteristicUuid, propertyName: propertyName, isActive: isActive)
+    }
+    
+    // 更改 BLE 描述符信息
+    public func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        // 调用端口管理器的实现
+        globalContext?.port?.onChangeBleDescriptorInfo(characteristicUuid: characteristicUuid, propertyName: propertyName, isActive: isActive)
     }
     
     // 关闭连接

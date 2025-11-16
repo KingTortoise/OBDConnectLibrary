@@ -9,20 +9,51 @@ import SwiftUI
 @preconcurrency
 import CoreBluetooth
 
-
-struct UUIDs {
-    static let readWriteService = "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2"
-    static let readWrite = "BEF8D6C9-9C21-4C9E-B632-BD58C1009F9F"
-}
-//fileprivate let ISSC_READ_WRITE_SERVICE_UUID = CBUUID(string: "18F0")
-//fileprivate let ISSC_READ_WRITE_CHARACTERISTIC_UUIT = CBUUID(string: "2AF0")
-
-// 设备信息结构体，包含 peripheral 和 RSSI
-struct BLEDeviceInfo {
+// 扫描设备信息结构体，包含 peripheral 和 RSSI
+struct BLEScannedDeviceInfo {
     let peripheral: CBPeripheral
     let rssi: Int
     let lastUpdateTime: Date
     let updateCount: Int
+    let advertisementData: [String: Any]?
+    let serviceUuids: [String]
+    let manufacturerData: [String: Data]
+    let txPowerLevel: Int?
+    
+    init(peripheral: CBPeripheral, rssi: Int, lastUpdateTime: Date, updateCount: Int, advertisementData: [String: Any]? = nil) {
+        self.peripheral = peripheral
+        self.rssi = rssi
+        self.lastUpdateTime = lastUpdateTime
+        self.updateCount = updateCount
+        self.advertisementData = advertisementData
+        
+        // 从广播数据中提取信息
+        var serviceUuids: [String] = []
+        var manufacturerData: [String: Data] = [:]
+        var txPowerLevel: Int? = nil
+        
+        if let adData = advertisementData {
+            // 提取服务 UUIDs
+            if let services = adData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] {
+                serviceUuids = services.map { $0.uuidString }
+            }
+            
+            // 提取制造商数据
+            if let mfgData = adData[CBAdvertisementDataManufacturerDataKey] as? Data {
+                manufacturerData["Manufacturer"] = mfgData
+            }
+        
+            
+            // 提取发射功率级别
+            if let txPower = adData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber {
+                txPowerLevel = txPower.intValue
+            }
+        }
+        
+        self.serviceUuids = serviceUuids
+        self.manufacturerData = manufacturerData
+        self.txPowerLevel = txPowerLevel
+    }
 }
 
 final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,@unchecked Sendable {
@@ -32,18 +63,58 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     // 当前连接的外设
     private var connectedPeripheral: CBPeripheral?
     // 所有发现的外设信息（包含RSSI）
-    private var discoveredDevices: [BLEDeviceInfo] = []
+    private var discoveredDevices: [BLEScannedDeviceInfo] = []
     
     private var characteristicForReadWrite: CBCharacteristic?
     private var state: State = .disconnected
     private var dataForRead = Data()
     private var readDataQueue = Data()
     
+    // 智能特征值选择相关属性
+    private var notifyCharacteristic: CBCharacteristic?
+    private var writeCharacteristic: CBCharacteristic?
+    private var combinedCharacteristic: CBCharacteristic?
+    private var notifyUUID: CBUUID?
+    private var writeUUID: CBUUID?
+    private var writeType: CBCharacteristicWriteType = CBCharacteristicWriteType.withoutResponse // 0 = WRITE_TYPE_DEFAULT, 1 = WRITE_TYPE_NO_RESPONSE
+    
+    // 订阅状态缓存
+    private var subscriptionCaches: [SubscriptionCache] = []
+    
+    // 订阅缓存结构体
+    private struct SubscriptionCache: Equatable {
+        let characteristic: CBCharacteristic
+        let subscriptionType: String // "NOTIFY" 或 "INDICATE"
+        
+        static func == (lhs: SubscriptionCache, rhs: SubscriptionCache) -> Bool {
+            return lhs.characteristic.uuid.uuidString == rhs.characteristic.uuid.uuidString &&
+                   lhs.characteristic.service?.uuid.uuidString == rhs.characteristic.service?.uuid.uuidString &&
+                   lhs.subscriptionType == rhs.subscriptionType
+        }
+    }
+    
+    // 设备信息收集相关属性
+    private var broadcastData: BroadcastData?
+    private var deviceInfo: BleDeviceInfoDetails?
+    private var serviceList: [BleServiceDto] = []
+    
+    // 设备信息服务 UUID（标准 UUID）
+    private let DEVICE_INFO_SERVICE_UUID = CBUUID(string: "0000180a-0000-1000-8000-00805f9b34fb")
+    private let MANUFACTURER_NAME_UUID = CBUUID(string: "00002a29-0000-1000-8000-00805f9b34fb")
+    private let MODEL_NUMBER_UUID = CBUUID(string: "00002a24-0000-1000-8000-00805f9b34fb")
+    private let SERIAL_NUMBER_UUID = CBUUID(string: "00002a25-0000-1000-8000-00805f9b34fb")
+    private let HARDWARE_REVISION_UUID = CBUUID(string: "00002a27-0000-1000-8000-00805f9b34fb")
+    private let FIRMWARE_REVISION_UUID = CBUUID(string: "00002a26-0000-1000-8000-00805f9b34fb")
+    private let SOFTWARE_REVISION_UUID = CBUUID(string: "00002a28-0000-1000-8000-00805f9b34fb")
+    private let SYSTEM_UUID = CBUUID(string: "00002A23-0000-1000-8000-00805F9B34FB")
+    private let IEEE_UUID = CBUUID(string: "00002A2A-0000-1000-8000-00805F9B34FB")
+    private let PnP_UUID = CBUUID(string: "00002A50-0000-1000-8000-00805F9B34FB")
+     
     // MTU 相关属性
     private var currentMTU: Int = 20 // 默认 MTU 值（BLE 默认是 20 字节）
     private var isMTURequested: Bool = false
     
-    private let syncQueue = DispatchQueue(label: "com.bleManage.syncQueue")
+    private let syncQueue = DispatchQueue(label: "com.bleManage.syncQueue", qos: .userInitiated)
     
     // 当前接收数据流的任务
     @available(iOS 13.0, *)
@@ -51,9 +122,10 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     
     // 扫描结果数据流
     @available(iOS 13.0, *)
-    private var scanResultContinuation: AsyncStream<[BLEDeviceInfo]>.Continuation?
+    private var scanResultContinuation: AsyncStream<[BLEScannedDeviceInfo]>.Continuation?
     @available(iOS 13.0, *)
-    private var scanResultStream: AsyncStream<[BLEDeviceInfo]>?
+    private var scanResultStream: AsyncStream<[BLEScannedDeviceInfo]>?
+    private var sendCount = 1
     
     // 设备断开回调
     var onDeviceDisconnect: (() -> Void)?
@@ -123,19 +195,16 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     }
     
     func waitForActualPeripheralConnection(peripheral: CBPeripheral, timeout: TimeInterval = 5.0) async -> Bool {
-        print("⏱️ BLE 开始等待peripheral状态变为connected，当前状态: \(peripheral.state.rawValue)")
         let result = await wait(unit: { [weak self] in
             guard let self = self else { return false }
             let isConnected = self.syncQueue.sync {
                 let state = peripheral.state
                 if state != .connected {
-                    print("⏱️ BLE 等待中，peripheral状态: \(state.rawValue)")
                 }
                 return state == .connected
             }
             return isConnected
         }, timeout: timeout)
-        print("⏱️ BLE peripheral状态等待结果: \(result)")
         return result
     }
     
@@ -185,10 +254,8 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         }
         
         // 关键修复：验证 peripheral 实际连接状态
-        print("⏱️ BLE 开始验证peripheral连接状态，当前状态: \(peripheral.state.rawValue)")
         let peripheralConnected = await waitForActualPeripheralConnection(peripheral: peripheral, timeout: 5.0)
         guard peripheralConnected else {
-            print("⏱️ BLE peripheral连接验证失败，当前状态: \(peripheral.state.rawValue)")
             syncQueue.sync {
                 self.connectedPeripheral = nil
                 self.characteristicForReadWrite = nil
@@ -196,7 +263,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             }
             return .failure(.connectionFailed(NSError(domain: "BLEManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Peripheral did not reach connected state"])))
         }
-        print("⏱️ BLE peripheral连接验证成功，状态: \(peripheral.state.rawValue)")
         
         // 获取并保存 MTU 值
         await updateMTUValue()
@@ -205,6 +271,11 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             self.state = .connected
             self.targetPeripheral = peripheral // 连接成功时更新目标设备
         }
+        // 异步获取设备信息（不阻塞连接成功返回）
+        Task {
+            await getBleDeviceInfo()
+        }
+               
         return .success(())
     }
     
@@ -220,7 +291,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             self.isMTURequested = true
         }
         
-        print("BLE MTU 协商完成，当前 MTU 值: \(mtuValue) 字节")
     }
     
     // 获取当前 MTU 值
@@ -245,7 +315,8 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         return chunks
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+    func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
+        // 状态检查
         let (currentState, characteristic, mtu, peripheral) = syncQueue.sync {
             (state, characteristicForReadWrite, currentMTU, connectedPeripheral)
         }
@@ -255,13 +326,11 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
               centralManager.state == CBManagerState.poweredOn, 
               characteristic != nil,
               let peripheral = peripheral else {
-            print("⏱️ BLE 写入失败: 基础状态检查失败 - state: \(currentState), centralManager状态: \(centralManager.state.rawValue), peripheral: \(peripheral != nil)")
             return .failure(.notConnected)
         }
         
         // 检查 peripheral 状态，如果未连接则更新内部状态
         if peripheral.state != .connected {
-            print("⏱️ BLE 写入失败: peripheral状态未连接 - 当前状态: \(peripheral.state.rawValue)")
             
             // 如果 peripheral 状态不是 connected，说明连接已断开
             // 更新内部状态为 disconnected
@@ -271,9 +340,9 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 self.characteristicForReadWrite = nil
             }
             
-            print("⏱️ BLE 检测到连接断开，更新内部状态为 disconnected")
             return .failure(.notConnected)
         }
+        
         guard !data.isEmpty else {
             // 空数据视为发送成功
             return .success(())
@@ -282,22 +351,17 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         // 检查数据长度是否超过 MTU
         if data.count <= mtu {
             // 数据长度在 MTU 范围内，直接发送
-            peripheral.writeValue(data, for: characteristic!, type: CBCharacteristicWriteType.withoutResponse)
-            let currentTime = CFAbsoluteTimeGetCurrent()
-            let date = Date(timeIntervalSince1970: currentTime)
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss.SSS"
-            let timeString = formatter.string(from: date)
-            print("⏱️ BLE 写入成功: \(data.count) 字节 - 时间: \(timeString)")
+            peripheral.writeValue(data, for: characteristic!, type: writeType)
             return .success(())
         } else {
             // 数据长度超过 MTU，需要分段发送
-            return await sendDataInChunks(data, mtu: mtu)
+            let result = sendDataInChunks(data, mtu: mtu)
+            return result
         }
     }
     
     // 分段发送数据
-    private func sendDataInChunks(_ data: Data, mtu: Int) async -> Result<Void, ConnectError> {
+    private func sendDataInChunks(_ data: Data, mtu: Int)  -> Result<Void, ConnectError> {
         let (peripheral, characteristic) = syncQueue.sync { (connectedPeripheral, characteristicForReadWrite) }
         guard let peripheral = peripheral, let characteristic = characteristic else {
             return .failure(.notConnected)
@@ -305,20 +369,14 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         
         let chunks = chunkData(data, chunkSize: mtu)
         for (index, chunk) in chunks.enumerated() {
-            peripheral.writeValue(chunk, for: characteristic, type: CBCharacteristicWriteType.withoutResponse)
+            peripheral.writeValue(chunk, for: characteristic, type: writeType)
             
             // 在包之间添加小延迟，避免发送过快
             if index < chunks.count - 1 {
-                try? await Task.sleep(nanoseconds: 10_000_000) // 10ms 延迟
+                Thread.sleep(forTimeInterval: 0.001) // 1ms 延迟
             }
         }
         
-        let currentTime = CFAbsoluteTimeGetCurrent()
-        let date = Date(timeIntervalSince1970: currentTime)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        let timeString = formatter.string(from: date)
-        print("⏱️ BLE 分段写入成功: \(data.count) 字节，\(chunks.count) 包 - 时间: \(timeString)")
         return .success(())
     }
     
@@ -358,7 +416,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 }
                 
                 if currentState != .connected {
-                    print("receiveDataFlow: not connected")
                     continuation.finish()
                     return
                 }
@@ -367,7 +424,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                     while true {
                         // 检查任务是否被取消
                         if Task.isCancelled {
-                            print("receiveDataFlow: task cancelled")
                             break
                         }
                         
@@ -384,22 +440,20 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                         }
                         
                         if hasData {
-                            print("⏱️ BLE receiveDataFlow: 向数据流发送数据, 大小: \(batch.count) 字节")
+                            sendCount += 1
                             continuation.yield(batch)
                         } else {
                             // 队列无数据：短暂延迟避免忙等待
-                            try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+                            try await Task.sleep(nanoseconds: 100_000) // 0.1ms
                         }
                     }
                 } catch {
-                    print("Error in receiveDataFlow: \(error.localizedDescription)")
                 }
                 
                 // 清理资源
                 self.syncQueue.async {
                     self.readDataQueue.removeAll()
                 }
-                print("receiveDataFlow stopped, buffers cleared")
                 continuation.finish()
             }
             
@@ -436,7 +490,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             // 重置 MTU 状态
             self.currentMTU = 20
             self.isMTURequested = false
-            print("⏱️ BLE 连接关闭，已取消接收任务")
         }
     }
     
@@ -444,15 +497,12 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     func startScan() async -> Bool {
         // 等待蓝牙状态就绪
         guard await waitForBluetoothPoweredOn() else {
-            let currentState = centralManager.state
-            let stateDescription = getBluetoothStateDescription(currentState)
-            print("Bluetooth is not powered on after waiting, current state: \(stateDescription) (\(currentState.rawValue))")
             return false
         }
         
         // 创建扫描结果数据流
         if #available(iOS 13.0, *) {
-            scanResultStream = AsyncStream<[BLEDeviceInfo]> { continuation in
+            scanResultStream = AsyncStream<[BLEScannedDeviceInfo]> { continuation in
                 scanResultContinuation = continuation
             }
         }
@@ -473,13 +523,12 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             ])
         }
         
-        print("Started BLE scanning for all peripherals")
         return true
     }
     
     // 获取扫描结果数据流
     @available(iOS 13.0, *)
-    func getScanResultStream() -> AsyncStream<[BLEDeviceInfo]>? {
+    func getScanResultStream() -> AsyncStream<[BLEScannedDeviceInfo]>? {
         return scanResultStream
     }
     
@@ -496,13 +545,11 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             scanResultStream = nil
         }
         
-        print("Stopped BLE scanning")
     }
     
     /// ##CBCentralManagerDelegate
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let currentState = central.state
-        print("蓝牙状态变化: \(getBluetoothStateDescription(currentState))")
         
         // 当蓝牙状态变为非 poweredOn 时，触发蓝牙断开回调
         if currentState != .poweredOn {
@@ -512,14 +559,12 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 self.connectedPeripheral = nil
                 self.characteristicForReadWrite = nil
             }
-            print("⏱️ BLE 蓝牙状态变化，更新内部状态为 disconnected")
             
             DispatchQueue.main.async {
                 self.onBluetoothDisconnect?()
             }
         } else {
             // 蓝牙重新开启时，如果之前有连接，需要重新连接
-            print("⏱️ BLE 蓝牙重新开启，检查是否需要重连")
         }
     }
     
@@ -557,27 +602,27 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 }
                 
                 if shouldUpdateRSSI {
-                    let newDeviceInfo = BLEDeviceInfo(
+                    let newDeviceInfo = BLEScannedDeviceInfo(
                         peripheral: peripheral,
                         rssi: rssiValue,
                         lastUpdateTime: currentTime,
-                        updateCount: existingDevice.updateCount + 1
+                        updateCount: existingDevice.updateCount + 1,
+                        advertisementData: advertisementData
                     )
                     self.discoveredDevices[existingIndex] = newDeviceInfo
                     shouldUpdate = true
-                    print("Updated BLE device RSSI: \(peripheral.name ?? "Unknown") - \(peripheral.identifier) - RSSI: \(rssiValue) (变化: \(rssiDifference)dBm, 更新次数: \(newDeviceInfo.updateCount))")
                 }
             } else {
                 // 添加新设备
-                let newDeviceInfo = BLEDeviceInfo(
+                let newDeviceInfo = BLEScannedDeviceInfo(
                     peripheral: peripheral,
                     rssi: rssiValue,
                     lastUpdateTime: currentTime,
-                    updateCount: 1
+                    updateCount: 1,
+                    advertisementData: advertisementData
                 )
                 self.discoveredDevices.append(newDeviceInfo)
                 shouldUpdate = true
-                print("Discovered BLE device: \(peripheral.name ?? "Unknown") - \(peripheral.identifier) - RSSI: \(rssiValue)")
             }
             
             // 只有在需要更新时才发送数据流
@@ -593,23 +638,18 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         syncQueue.async {
             peripheral.delegate = self
-            peripheral.discoverServices([CBUUID(string: UUIDs.readWriteService)])
+            // 发现所有服务，包括设备信息服务
+            peripheral.discoverServices(nil)
         }
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: (any Error)?) {
-        NSLog("%@\n", "didDisconnectPeripheral");
-        if let error = error {
-            NSLog("Error: %@\n", error.localizedDescription);
-        }
-        
         // 设备断开时主动取消接收任务
         syncQueue.async { [weak self] in
             guard let self = self else { return }
             self.currentReceiveTask?.cancel()
             self.currentReceiveTask = nil
             self.state = .disconnected
-            print("⏱️ BLE 设备断开，已取消接收任务")
             
             // 触发设备断开回调
             DispatchQueue.main.async {
@@ -622,68 +662,199 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         syncQueue.async {
             if let services = peripheral.services {
                 for service in services {
-                    if service.uuid == CBUUID(string: UUIDs.readWriteService) {
-                        peripheral.discoverCharacteristics([CBUUID(string: UUIDs.readWrite)], for: service)
-                    }
+                    // 发现所有特征值，不限制特定 UUID
+                    peripheral.discoverCharacteristics(nil, for: service)
                 }
             }
+        }
+    }
+    
+    /// 获取服务名称（用于调试）
+    private func getServiceName(for uuid: CBUUID) -> String {
+        switch uuid.uuidString.uppercased() {
+        case "0000180A-0000-1000-8000-00805F9B34FB":
+            return "Device Information Service"
+        case "0000180F-0000-1000-8000-00805F9B34FB":
+            return "Battery Service"
+        case "0000180D-0000-1000-8000-00805F9B34FB":
+            return "Heart Rate Service"
+        case "00001812-0000-1000-8000-00805F9B34FB":
+            return "Human Interface Device"
+        default:
+            return "Unknown Service"
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
-        NSLog("%@\n", "didDiscoverCharacteristicsForService");
-        if let error = error {
-            NSLog("Error: %@\n", error.localizedDescription);
-            return;
+        if error != nil {
+            return
         }
+        
         syncQueue.async { [weak self] in
-            guard let self = self else {return}
+            guard let self = self else { return }
+            
             if let characteristics = service.characteristics {
-                for characteristic in characteristics {
-                    if characteristic.uuid == CBUUID(string: UUIDs.readWrite) {
-                        self.characteristicForReadWrite = characteristic
-                        self.connectedPeripheral?.setNotifyValue(true, for: characteristic)
-                    }
-                }
+                // 解析所有特征值，按 Kotlin 逻辑进行智能选择
+                self.parseAllCharacteristics(characteristics)
             }
         }
     }
     
+    /// 获取特征值名称（用于调试）
+    private func getCharacteristicName(for uuid: CBUUID) -> String {
+        switch uuid.uuidString.uppercased() {
+        case "00002A29-0000-1000-8000-00805F9B34FB":
+            return "Manufacturer Name String"
+        case "00002A24-0000-1000-8000-00805F9B34FB":
+            return "Model Number String"
+        case "00002A25-0000-1000-8000-00805F9B34FB":
+            return "Serial Number String"
+        case "00002A27-0000-1000-8000-00805F9B34FB":
+            return "Hardware Revision String"
+        case "00002A26-0000-1000-8000-00805F9B34FB":
+            return "Firmware Revision String"
+        case "00002A28-0000-1000-8000-00805F9B34FB":
+            return "Software Revision String"
+        case "00002A23-0000-1000-8000-00805F9B34FB":
+            return "System ID"
+        case "00002A2A-0000-1000-8000-00805F9B34FB":
+            return "IEEE 11073-20601 Regulatory Certification Data List"
+        case "00002A50-0000-1000-8000-00805F9B34FB":
+            return "PnP ID"
+        default:
+            return "Unknown Characteristic"
+        }
+    }
+    
+    /// 解析所有特征值，按智能策略选择最佳配置
+    private func parseAllCharacteristics(_ characteristics: [CBCharacteristic]) {
+        // 保存之前的专门特征值引用
+        let previousNotifyCharacteristic = notifyCharacteristic
+        let previousWriteCharacteristic = writeCharacteristic
+        
+        // 重置特征值引用
+        characteristicForReadWrite = nil
+        notifyCharacteristic = nil
+        writeCharacteristic = nil
+        combinedCharacteristic = nil
+        
+        
+        // 1. 遍历所有特征值，收集可用特征值
+        for characteristic in characteristics {
+            let properties = characteristic.properties
+            
+            // 检查特征值支持的操作
+            let isNotifySupported = properties.contains(.notify) || properties.contains(.indicate)
+            let isWriteSupported = properties.contains(.write) || properties.contains(.writeWithoutResponse)
+            
+            
+            // 记录同时支持通知和写入的特征值（最佳选择）
+            if isNotifySupported && isWriteSupported {
+                combinedCharacteristic = characteristic
+            }
+            // 记录单独的通知特征值
+            else if isNotifySupported && !isWriteSupported && notifyCharacteristic == nil {
+                notifyCharacteristic = characteristic
+            }
+            // 记录单独的写入特征值
+            else if isWriteSupported && !isNotifySupported && writeCharacteristic == nil {
+                writeCharacteristic = characteristic
+            }
+        }
+        
+        // 2. 如果没有找到新的专门特征值，保留之前的
+        if notifyCharacteristic == nil && previousNotifyCharacteristic != nil {
+            notifyCharacteristic = previousNotifyCharacteristic
+        }
+        if writeCharacteristic == nil && previousWriteCharacteristic != nil {
+            writeCharacteristic = previousWriteCharacteristic
+        }
+        
+        // 3. 按优先级选择特征值配置
+        selectOptimalCharacteristicConfiguration()
+    }
+    
+    /// 按优先级选择最佳特征值配置
+    private func selectOptimalCharacteristicConfiguration() {
+        // 第一优先级：分离式特征值（不同 UUID 进行通知和写入）
+        if let notify = notifyCharacteristic, let write = writeCharacteristic {
+            
+            notifyUUID = notify.uuid
+            writeUUID = write.uuid
+            
+            // 开启通知
+            enableCharacteristicNotification(notify)
+            
+            // 设置写入特征值作为主要引用
+            characteristicForReadWrite = write
+            return
+        }
+        
+        // 第二优先级：组合式特征值（同一 UUID 进行通知和写入）
+        if let combined = combinedCharacteristic {
+            
+            notifyUUID = combined.uuid
+            writeUUID = combined.uuid
+            
+            // 开启通知
+            enableCharacteristicNotification(combined)
+            
+            // 设置为主要引用
+            characteristicForReadWrite = combined
+            return
+        }
+        
+        
+        if let notify = notifyCharacteristic {
+            notifyUUID = notify.uuid
+            enableCharacteristicNotification(notify)
+            characteristicForReadWrite = notify
+        } else if let write = writeCharacteristic {
+            writeUUID = write.uuid
+            
+            characteristicForReadWrite = write
+        }
+    }
+    
+    /// 开启特征值的通知功能
+    private func enableCharacteristicNotification(_ characteristic: CBCharacteristic) {
+        guard let peripheral = connectedPeripheral else {
+            return
+        }
+        
+        peripheral.setNotifyValue(true, for: characteristic)
+        
+        // 添加到订阅缓存
+        let subscriptionType = characteristic.properties.contains(.notify) ? "NOTIFY" : "INDICATE"
+        let cache = SubscriptionCache(characteristic: characteristic, subscriptionType: subscriptionType)
+        subscriptionCaches.append(cache)
+    }
+    
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
-        let receiveStartTime = CFAbsoluteTimeGetCurrent()
-        NSLog("%@\n", "didUpdateValueForCharacteristic");
         if let error = error {
-            NSLog("Error: %@\n", error.localizedDescription);
             return;
         }
+        
         syncQueue.async {[weak self] in
             guard let self = self else {
                 return
             }
-            if characteristic.service?.uuid == CBUUID(string: UUIDs.readWriteService) {
-                if characteristic.uuid == CBUUID(string: UUIDs.readWrite) {
-                    if connectedPeripheral == peripheral {
-                        if let value = characteristic.value {
-                            self.dataForRead.append(value)
-                            self.readDataQueue.append(value)
-                            let currentTime = CFAbsoluteTimeGetCurrent()
-                            let date = Date(timeIntervalSince1970: currentTime)
-                            let formatter = DateFormatter()
-                            formatter.dateFormat = "HH:mm:ss.SSS"
-                            let timeString = formatter.string(from: date)
-                            print("⏱️ BLE 接收数据: \(value.count) 字节 - 时间: \(timeString)")
-                            print("⏱️ BLE readDataQueue 当前大小: \(self.readDataQueue.count) 字节")
-                        }
-                    }
+            
+            // 智能特征值匹配：支持通知的特征值
+            let isNotifyCharacteristic = (self.notifyUUID != nil && characteristic.uuid == self.notifyUUID) ||
+                                        (self.combinedCharacteristic != nil && characteristic.uuid == self.combinedCharacteristic!.uuid)
+            
+            if isNotifyCharacteristic && self.connectedPeripheral == peripheral {
+                if let value = characteristic.value {
+                    self.dataForRead.append(value)
+                    self.readDataQueue.append(value)
                 }
             }
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: (any Error)?) {
-        NSLog("%@\n", "didWriteValueForCharacteristic");
         if let error = error {
-            NSLog("Error: %@\n", error.localizedDescription);
             return;
         }
     }
@@ -705,18 +876,14 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     
     /// 重连方法
     func reconnect() async -> Result<Void, ConnectError> {
-        print("🔄 BLE 开始重连流程...")
         
         // 检查是否已连接或正在重连
         let currentState = syncQueue.sync { state }
-        print("🔄 BLE 重连前状态检查: \(currentState)")
         
         if currentState == .connected {
-            print("🔄 BLE 已连接，无需重连")
             return .success(())
         }
         if currentState == .connecting {
-            print("🔄 BLE 正在连接中，无法重连")
             return .failure(.connecting)
         }
         
@@ -729,7 +896,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
         guard let targetPeripheral = syncQueue.sync(execute: { self.targetPeripheral }) else {
             return .failure(.connectionFailed(NSError(domain: "BLEManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "No target device for reconnection"])))
         }
-        print("⏱️ BLE 重连使用targetPeripheral: \(targetPeripheral.identifier), 当前状态: \(targetPeripheral.state.rawValue)")
         
         // 执行带重试的重连逻辑
         return await performReconnect(peripheral: targetPeripheral, timeout: 30.0)
@@ -744,25 +910,17 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
             reconnectAttempts += 1
             let currentAttempt = reconnectAttempts
             
-            print("BLE重连尝试 \(currentAttempt)/\(MAX_RECONNECT_ATTEMPTS)")
             
             // 执行单次重连
             let result = await open(peripheral: peripheral)
             if case .success = result {
-                print("BLE open方法成功，开始验证连接状态...")
-                
-                // 检查 open 方法后的实际状态
-                let currentState = syncQueue.sync { state }
-                print("⏱️ BLE 重连后状态检查: manager状态=\(currentState), peripheral状态=\(peripheral.state.rawValue)")
                 
                 // 重连成功：验证连接状态是否真正可用
                 let connectionValid = await validateConnection(peripheral: peripheral)
                 if connectionValid {
                     reconnectAttempts = 0
-                    print("BLE重连成功，连接状态验证通过")
                     return .success(())
                 } else {
-                    print("BLE重连失败：连接状态验证失败")
                     // 如果验证失败，确保状态为 disconnected
                     syncQueue.sync {
                         self.state = .disconnected
@@ -770,7 +928,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                     return .failure(.connectionFailed(NSError(domain: "BLEManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connection validation failed"])))
                 }
             } else {
-                print("BLE重连失败，尝试 \(currentAttempt)/\(MAX_RECONNECT_ATTEMPTS)")
                 
                 // 重连失败：检查是否达到最大次数
                 if reconnectAttempts >= MAX_RECONNECT_ATTEMPTS {
@@ -783,7 +940,6 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
                 
                 // 未达最大次数：延迟后继续重连（指数退避）
                 let delayMillis = INITIAL_RECONNECT_DELAY * pow(2.0, Double(currentAttempt - 1)) // 1s→2s→4s...
-                print("BLE重连延迟 \(delayMillis) 秒后重试")
                 try? await Task.sleep(nanoseconds: UInt64(delayMillis * 1_000_000_000))
             }
         }
@@ -796,25 +952,581 @@ final class BLEManage: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate,
     private func validateConnection(peripheral: CBPeripheral) async -> Bool {
         // 检查 peripheral 状态
         guard peripheral.state == .connected else {
-            print("⏱️ BLE 连接验证失败: peripheral状态为 \(peripheral.state.rawValue)")
             return false
         }
         
         // 检查特征值是否可用
         let characteristic = syncQueue.sync { characteristicForReadWrite }
         guard characteristic != nil else {
-            print("⏱️ BLE 连接验证失败: 特征值不可用")
             return false
         }
         
         // 检查 BLE 管理器状态
         let managerState = syncQueue.sync { state }
         guard managerState == .connected else {
-            print("⏱️ BLE 连接验证失败: 管理器状态为 \(managerState)")
             return false
         }
-        
-        print("⏱️ BLE 连接验证通过: peripheral=\(peripheral.state.rawValue), characteristic=\(characteristic != nil), manager=\(managerState)")
         return true
+    }
+    
+    // MARK: - Device Info Collection
+    
+    /// 获取 BLE 设备信息（按照 Kotlin 逻辑实现）
+    func getBleDeviceInfo() async -> BleDeviceInfo {
+        
+        // 1. 收集广播数据
+        if broadcastData == nil {
+            await collectBroadcastData()
+        }
+        
+        // 2. 收集设备信息服务
+        if deviceInfo == nil {
+            await collectDeviceInfoService()
+        }
+        
+        // 3. 收集服务特征值信息
+        await collectServiceCharacteristics()
+        
+        return BleDeviceInfo(
+            broadcastData: broadcastData,
+            deviceInfo: deviceInfo,
+            serviceInfo: serviceList
+        )
+    }
+    
+    /// 收集广播数据
+    private func collectBroadcastData() async {
+        
+        // 从扫描结果中获取目标设备的广播数据
+        let targetDevice = syncQueue.sync { targetPeripheral }
+        guard let peripheral = targetDevice else {
+            return
+        }
+        
+        // 从已发现的设备中查找匹配的扫描数据
+        let discoveredDevices = syncQueue.sync { self.discoveredDevices }
+        let matchingDevice = discoveredDevices.first { $0.peripheral.identifier == peripheral.identifier }
+        
+        var deviceName = peripheral.name ?? "Unknown"
+        var txPowerLevel = -1
+        var serviceUuids: [String] = []
+        var manufacturerData: [String: Data] = [:]
+        var isConnect: Bool = false
+        
+        if let device = matchingDevice {
+            // 从扫描数据中提取信息
+            deviceName = peripheral.name ?? "Unknown"
+            txPowerLevel = device.txPowerLevel ?? device.rssi // 优先使用广播中的功率级别，否则使用 RSSI
+            
+            // 使用从广播数据中提取的信息
+            serviceUuids = device.serviceUuids
+            manufacturerData = device.manufacturerData
+            isConnect = device.advertisementData != nil
+            
+        }
+        
+        broadcastData = BroadcastData(
+            deviceName: deviceName,
+            txPowerLevel: txPowerLevel,
+            serviceUuids: serviceUuids,
+            manufacturerData: manufacturerData,
+            isConnect: isConnect
+        )
+        
+    }
+    
+    /// 收集设备信息服务
+    private func collectDeviceInfoService() async {
+        
+        guard let peripheral = syncQueue.sync(execute: { connectedPeripheral }) else {
+            return
+        }
+        
+        // 首先尝试从广播数据中获取基本信息
+        let discoveredDevices = syncQueue.sync { self.discoveredDevices }
+        
+        var manufacturerName: String? = nil
+        var modelNumber: String? = nil
+        var serialNumber: String? = nil
+        var hardwareRevision: String? = nil
+        var firmwareRevision: String? = nil
+        var softwareRevision: String? = nil
+        var systemId: String? = nil
+        var ieeeId: String? = nil
+        var pnpId: String? = nil
+    
+        
+        // 尝试从标准设备信息服务获取详细信息
+        if let deviceInfoService = peripheral.services?.first(where: { $0.uuid == DEVICE_INFO_SERVICE_UUID }) {
+            
+            // 串行读取所有设备信息特征值
+            manufacturerName = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == MANUFACTURER_NAME_UUID })) ?? ""
+            modelNumber = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == MODEL_NUMBER_UUID }))
+            serialNumber = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == SERIAL_NUMBER_UUID }))
+            hardwareRevision = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == HARDWARE_REVISION_UUID }))
+            firmwareRevision = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == FIRMWARE_REVISION_UUID }))
+            softwareRevision = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == SOFTWARE_REVISION_UUID }))
+            systemId = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == SYSTEM_UUID }))
+            ieeeId = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == IEEE_UUID }))
+            pnpId = await readCharacteristic(peripheral, deviceInfoService.characteristics?.first(where: { $0.uuid == PnP_UUID }))
+        } else {
+            
+            // 如果没有标准设备信息服务，提供一些基本信息
+            if manufacturerName == nil {
+                manufacturerName = "Unknown Manufacturer"
+            }
+            modelNumber = peripheral.name ?? "Unknown Model"
+            serialNumber = "UUID: \(peripheral.identifier.uuidString)"
+        }
+        
+        // 确保至少有一些基本信息
+        if manufacturerName == nil {
+            manufacturerName = "Unknown Manufacturer"
+        }
+        
+        deviceInfo = BleDeviceInfoDetails(
+            manufacturerName: manufacturerName,
+            modelNumber: modelNumber,
+            serialNumber: serialNumber,
+            hardwareRevision: hardwareRevision,
+            firmwareRevision: firmwareRevision,
+            softwareRevision: softwareRevision,
+            systemId: systemId,
+            ieeeId: ieeeId,
+            pnpId: pnpId
+        )
+        
+    }
+    
+    /// 收集服务特征值信息
+    private func collectServiceCharacteristics() async {
+        
+        guard let peripheral = syncQueue.sync(execute: { connectedPeripheral }) else {
+            return
+        }
+        
+        serviceList.removeAll()
+        
+        guard let services = peripheral.services else {
+            return
+        }
+        
+        // 保存当前的特征值引用，避免在收集过程中被重置
+        let currentNotifyCharacteristic = syncQueue.sync { notifyCharacteristic }
+        let currentWriteCharacteristic = syncQueue.sync { writeCharacteristic }
+        
+        for service in services {
+            // 只收集多属性特征值的服务
+            let hasMultiPropertyCharacteristic = service.characteristics?.contains { characteristic in
+                countProperties(characteristic.properties) > 1
+            } ?? false
+            
+            if hasMultiPropertyCharacteristic {
+                let serviceDto = mapServiceToDto(service, notifyChar: currentNotifyCharacteristic, writeChar: currentWriteCharacteristic)
+                serviceList.append(serviceDto)
+            }
+        }
+        
+    }
+    
+    /// 读取单个特征值
+    private func readCharacteristic(_ peripheral: CBPeripheral, _ characteristic: CBCharacteristic?) async -> String? {
+        guard let characteristic = characteristic else { 
+            return nil 
+        }
+        
+        
+        // 检查特征值是否支持读取
+        guard characteristic.properties.contains(.read) else {
+            return nil
+        }
+        
+        // 如果特征值已经有缓存的值，直接使用
+        if let value = characteristic.value, !value.isEmpty {
+            let result = parseCharacteristicValue(value, for: characteristic.uuid)
+            return result
+        }
+        
+        // 尝试读取特征值
+        return await withCheckedContinuation { continuation in
+            // 设置一个超时机制
+            let timeoutTask = Task {
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2秒超时
+                continuation.resume(returning: nil)
+            }
+            
+            // 使用 peripheral.readValue 进行异步读取
+            peripheral.readValue(for: characteristic)
+            
+            // 等待一小段时间让读取完成
+            Task {
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5秒
+                timeoutTask.cancel()
+                
+                if let value = characteristic.value, !value.isEmpty {
+                    let result = parseCharacteristicValue(value, for: characteristic.uuid)
+                    continuation.resume(returning: result)
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+    
+    /// 解析特征值数据
+    private func parseCharacteristicValue(_ data: Data, for uuid: CBUUID) -> String {
+        // 根据特征值类型选择解析方式
+        switch uuid {
+        case SYSTEM_UUID, IEEE_UUID, PnP_UUID:
+            // 二进制特征值，转换为十六进制
+            return data.map { String(format: "%02X", $0) }.joined(separator: ":")
+        default:
+            // 字符串特征值，使用 UTF-8 解析
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+    }
+    
+    /// 将服务转换为数据传输对象
+    private func mapServiceToDto(_ service: CBService, notifyChar: CBCharacteristic? = nil, writeChar: CBCharacteristic? = nil) -> BleServiceDto {
+        let characteristics: [BleCharacteristicDto] = service.characteristics?.map { characteristic in
+            let propertyStatus = checkEachPropertyStatus(characteristic, notifyChar: notifyChar, writeChar: writeChar)
+            return BleCharacteristicDto(
+                characteristicUuid: characteristic.uuid.uuidString,
+                properties: mapProperties(characteristic.properties),
+                value: characteristic.value?.map { String(format: "%02X", $0) }.joined(separator: ":") ?? "",
+                propertyStatus: propertyStatus
+            )
+        } ?? []
+        
+        return BleServiceDto(
+            serviceUuid: service.uuid.uuidString,
+            characteristics: characteristics
+        )
+    }
+    
+    /// 检查特征的每个属性状态
+    private func checkEachPropertyStatus(_ characteristic: CBCharacteristic, notifyChar: CBCharacteristic? = nil, writeChar: CBCharacteristic? = nil) -> [String: Bool] {
+        var propertyStatus: [String: Bool] = [:]
+        
+        // 只添加支持的属性到 propertyStatus 中
+        
+        // READ 属性 - 如果支持读取，则添加到状态中
+        if characteristic.properties.contains(.read) {
+            propertyStatus["READ"] = true
+        }
+        
+        // NOTIFY 属性 - 如果支持通知，检查是否已订阅
+        if characteristic.properties.contains(.notify) {
+            // 检查订阅缓存中是否有该特征值的 NOTIFY 订阅
+            let isNotifySubscribed: Bool = subscriptionCaches.contains { cache in
+                cache.characteristic.service?.uuid.uuidString == characteristic.service?.uuid.uuidString &&
+                cache.characteristic.uuid.uuidString == characteristic.uuid.uuidString &&
+                cache.subscriptionType == "NOTIFY"
+            }
+            propertyStatus["NOTIFY"] = isNotifySubscribed
+        }
+        
+        // INDICATE 属性 - 如果支持指示，检查是否已订阅
+        if characteristic.properties.contains(.indicate) {
+            // 检查订阅缓存中是否有该特征值的 INDICATE 订阅
+            let isIndicateSubscribed: Bool = subscriptionCaches.contains { cache in
+                cache.characteristic.service?.uuid.uuidString == characteristic.service?.uuid.uuidString &&
+                cache.characteristic.uuid.uuidString == characteristic.uuid.uuidString &&
+                cache.subscriptionType == "INDICATE"
+            }
+            propertyStatus["INDICATE"] = isIndicateSubscribed
+        }
+        
+        // WRITE 属性 - 如果支持写入，检查是否当前活跃
+        if characteristic.properties.contains(.write) {
+            // 检查是否当前活跃的写入特征值，或者是专门的写入特征值，并且 writeType 为 DEFAULT
+            let isWriteActive = (writeUUID == characteristic.uuid) &&
+            (writeType == .withResponse) // WRITE_TYPE_DEFAULT
+            propertyStatus["WRITE"] = isWriteActive
+        }
+        
+        // WRITE_WITHOUT_RESPONSE 属性 - 如果支持无响应写入，检查是否当前活跃
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            // 检查是否当前活跃的写入特征值，或者是专门的写入特征值，并且 writeType 为 NO_RESPONSE
+            let isWriteNoRespActive = (writeUUID == characteristic.uuid) &&
+            (writeType == .withoutResponse) // WRITE_TYPE_NO_RESPONSE
+            propertyStatus["WRITE_WITHOUT_RESPONSE"] = isWriteNoRespActive
+        }
+        
+        
+        return propertyStatus
+    }
+    
+    /// 转换特征属性为可读字符串
+    private func mapProperties(_ properties: CBCharacteristicProperties) -> [String] {
+        var result: [String] = []
+        
+        if properties.contains(.read) {
+            result.append("READ")
+        }
+        if properties.contains(.write) {
+            result.append("WRITE")
+        }
+        if properties.contains(.notify) {
+            result.append("NOTIFY")
+        }
+        if properties.contains(.indicate) {
+            result.append("INDICATE")
+        }
+        if properties.contains(.writeWithoutResponse) {
+            result.append("WRITE_WITHOUT_RESPONSE")
+        }
+        
+        return result
+    }
+    
+    /// 计算特征属性的数量
+    private func countProperties(_ properties: CBCharacteristicProperties) -> Int {
+        var count = 0
+        if properties.contains(.read) { count += 1 }
+        if properties.contains(.write) { count += 1 }
+        if properties.contains(.notify) { count += 1 }
+        if properties.contains(.indicate) { count += 1 }
+        if properties.contains(.writeWithoutResponse) { count += 1 }
+        return count
+    }
+    
+    // MARK: - BLE 信息变更回调实现
+    
+    /// 处理 BLE 写入信息变更
+    /// - Parameters:
+    ///   - characteristicUuid: 特征值 UUID
+    ///   - propertyName: 属性名称 (WRITE, WRITE_WITHOUT_RESPONSE)
+    ///   - isActive: 是否激活
+    func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        
+        // 确保在连接状态下才处理
+        guard let peripheral = connectedPeripheral, peripheral.state == .connected else {
+            return
+        }
+        
+        // 查找对应的特征值
+        guard let characteristic = findCharacteristicByUuid(characteristicUuid) else {
+            return
+        }
+        
+        // 根据属性名称处理不同的写入类型
+        switch propertyName {
+        case "WRITE":
+            writeType = .withResponse
+        case "WRITE_WITHOUT_RESPONSE":
+            writeType = .withoutResponse
+        default:
+            break
+        }
+        if isActive {
+            characteristicForReadWrite = characteristic
+            writeUUID = characteristic.uuid
+        } else {
+            characteristicForReadWrite = nil
+            writeUUID = nil
+        }
+    }
+    
+    /// 处理 BLE 描述符信息变更
+    /// - Parameters:
+    ///   - characteristicUuid: 特征值 UUID
+    ///   - propertyName: 属性名称 (NOTIFY, INDICATE)
+    ///   - isActive: 是否激活
+    func onChangeBleDescriptorInfo(characteristicUuid: String, propertyName: String, isActive: Bool) {
+        
+        // 确保在连接状态下才处理
+        guard let peripheral = connectedPeripheral, peripheral.state == .connected else {
+            return
+        }
+        
+        // 查找对应的特征值
+        guard let characteristic = findCharacteristicByUuid(characteristicUuid) else {
+            return
+        }
+        
+        
+        // 根据属性名称处理不同的订阅类型
+        switch propertyName {
+        case "NOTIFY":
+            handleNotifyPropertyChange(characteristic: characteristic, isActive: isActive)
+        case "INDICATE":
+            handleIndicatePropertyChange(characteristic: characteristic, isActive: isActive)
+        default:
+            break
+        }
+        
+        if characteristic == characteristicForReadWrite {
+            notifyUUID = characteristic.uuid
+        }
+        
+    }
+    
+    // MARK: - 私有辅助方法
+    
+    /// 根据 UUID 查找特征值
+    private func findCharacteristicByUuid(_ uuidString: String) -> CBCharacteristic? {
+        guard let peripheral = connectedPeripheral else { return nil }
+        
+        guard let services = peripheral.services else { return nil }
+        
+        for service in services {
+            guard let characteristics = service.characteristics else { continue }
+            
+            for characteristic in characteristics {
+                if characteristic.uuid.uuidString.lowercased() == uuidString.lowercased() {
+                    return characteristic
+                }
+            }
+        }
+        
+        return nil
+    }
+
+    
+    /// 处理 NOTIFY 属性变更
+    private func handleNotifyPropertyChange(characteristic: CBCharacteristic, isActive: Bool) {
+        
+        // 更新订阅缓存
+        updateSubscriptionCache(characteristic: characteristic, subscriptionType: "NOTIFY", isActive: isActive)
+        
+        // 执行实际的订阅/取消订阅操作
+        Task {
+            await performNotificationSubscription(characteristic: characteristic, isActive: isActive)
+        }
+    }
+    
+    /// 处理 INDICATE 属性变更
+    private func handleIndicatePropertyChange(characteristic: CBCharacteristic, isActive: Bool) {
+        
+        // 更新订阅缓存
+        updateSubscriptionCache(characteristic: characteristic, subscriptionType: "INDICATE", isActive: isActive)
+        
+        // 执行实际的订阅/取消订阅操作
+        Task {
+            await performNotificationSubscription(characteristic: characteristic, isActive: isActive)
+        }
+    }
+    
+    /// 更新订阅缓存
+    private func updateSubscriptionCache(characteristic: CBCharacteristic, subscriptionType: String, isActive: Bool) {
+        let cache = SubscriptionCache(characteristic: characteristic, subscriptionType: subscriptionType)
+        
+        if isActive {
+            // 先移除可能存在的旧缓存（相同特征值但不同订阅类型）
+            subscriptionCaches.removeAll { existingCache in
+                existingCache.characteristic.uuid == characteristic.uuid &&
+                existingCache.characteristic.service?.uuid == characteristic.service?.uuid
+            }
+            
+            // 添加新缓存
+            subscriptionCaches.append(cache)
+        } else {
+            // 移除特定特征值和订阅类型的缓存
+            if let index = subscriptionCaches.firstIndex(of: cache) {
+                subscriptionCaches.remove(at: index)
+            }
+        }
+    }
+    
+    /// 执行通知订阅操作
+    private func performNotificationSubscription(characteristic: CBCharacteristic, isActive: Bool) async {
+        guard let peripheral = connectedPeripheral else {
+            return
+        }
+        
+        do {
+            if isActive {
+                // 启用通知
+                peripheral.setNotifyValue(true, for: characteristic)
+            } else {
+                // 禁用通知
+                peripheral.setNotifyValue(false, for: characteristic)
+            }
+        } catch {
+        }
+    }
+}
+
+// MARK: - Data Structures
+
+/// BLE 设备信息
+public struct BleDeviceInfo {
+    public let broadcastData: BroadcastData?
+    public let deviceInfo: BleDeviceInfoDetails?
+    public let serviceInfo: [BleServiceDto]
+    
+    public init(broadcastData: BroadcastData?, deviceInfo: BleDeviceInfoDetails?, serviceInfo: [BleServiceDto]) {
+        self.broadcastData = broadcastData
+        self.deviceInfo = deviceInfo
+        self.serviceInfo = serviceInfo
+    }
+}
+
+/// 广播数据
+public struct BroadcastData {
+    public let deviceName: String
+    public let txPowerLevel: Int
+    public let serviceUuids: [String]
+    public let manufacturerData: [String: Data]
+    public let isConnect: Bool
+    
+    public init(deviceName: String, txPowerLevel: Int, serviceUuids: [String], manufacturerData: [String: Data], isConnect: Bool = false) {
+        self.deviceName = deviceName
+        self.txPowerLevel = txPowerLevel
+        self.serviceUuids = serviceUuids
+        self.manufacturerData = manufacturerData
+        self.isConnect = isConnect
+    }
+}
+
+/// 设备信息服务中的详细信息
+public struct BleDeviceInfoDetails {
+    public let manufacturerName: String?
+    public let modelNumber: String?
+    public let serialNumber: String?
+    public let hardwareRevision: String?
+    public let firmwareRevision: String?
+    public let softwareRevision: String?
+    public let systemId: String?
+    public let ieeeId: String?
+    public let pnpId: String?
+    
+    public init(manufacturerName: String?, modelNumber: String?, serialNumber: String?, hardwareRevision: String?, firmwareRevision: String?, softwareRevision: String?, systemId: String?, ieeeId: String?, pnpId: String?) {
+        self.manufacturerName = manufacturerName
+        self.modelNumber = modelNumber
+        self.serialNumber = serialNumber
+        self.hardwareRevision = hardwareRevision
+        self.firmwareRevision = firmwareRevision
+        self.softwareRevision = softwareRevision
+        self.systemId = systemId
+        self.ieeeId = ieeeId
+        self.pnpId = pnpId
+    }
+}
+
+/// 服务信息
+public struct BleServiceDto {
+    public let serviceUuid: String
+    public let characteristics: [BleCharacteristicDto]
+    
+    public init(serviceUuid: String, characteristics: [BleCharacteristicDto]) {
+        self.serviceUuid = serviceUuid
+        self.characteristics = characteristics
+    }
+}
+
+/// 特征信息
+public struct BleCharacteristicDto {
+    public let characteristicUuid: String
+    public let properties: [String]
+    public let value: String
+    public let propertyStatus: [String: Bool]
+    
+    public init(characteristicUuid: String, properties: [String], value: String, propertyStatus: [String: Bool]) {
+        self.characteristicUuid = characteristicUuid
+        self.properties = properties
+        self.value = value
+        self.propertyStatus = propertyStatus
     }
 }

@@ -116,7 +116,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         }
     }
     
-    func write(data: Data, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+    func write(data: Data, timeout: TimeInterval)  -> Result<Void, ConnectError> {
         let currentState = syncQueue.sync {state}
         guard currentState == .connected, let outputStream = outputStream, outputStream.hasSpaceAvailable, isOpened() else {
             return .failure(.notConnected)
