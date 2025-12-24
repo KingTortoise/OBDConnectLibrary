@@ -26,31 +26,33 @@ class BluetoothPortManage: IPortManage, @unchecked Sendable {
         bluetoothManage = BluetoothManage()
     }
     
-    func open(context: Any, name: String, peripheral: CBPeripheral?) async -> Result<Void, ConnectError> {
-        return await bluetoothManage.open(name: name)
+    func open(context: Any, name: String, peripheral: CBPeripheral?, completion: @escaping (Result<Void, ConnectError>) -> Void) {
+        bluetoothManage.open(name: name, completion: completion)
     }
     
     func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
         return  bluetoothManage.write(data: data, timeout: timeout)
     }
     
-    // 获取数据流
-    @available(iOS 13.0, *)
-    func receiveDataFlow() -> AsyncStream<Data> {
-        // 蓝牙暂时不支持数据流，返回空流
-        return AsyncStream<Data> { continuation in
-            continuation.finish()
-        }
+    // 获取数据流（使用回调替代AsyncStream以支持iOS 12.0）
+    func receiveDataFlow(callback: @escaping (Data) -> Void, onFinish: @escaping () -> Void) {
+        // 蓝牙暂时不支持数据流，直接调用onFinish
+        onFinish()
     }
     
-    func read(timeout: TimeInterval) async -> Result<Data?, ConnectError> {
-        let readResult = await bluetoothManage.read(timeout: timeout)
-        switch readResult {
-        case .success(let data):
-            bluetoothManage.clenReceiveInfo()
-            return .success(data)
-        case .failure(let error):
-            return .failure(error)
+    func read(timeout: TimeInterval, completion: @escaping (Result<Data?, ConnectError>) -> Void) {
+        bluetoothManage.read(timeout: timeout) { [weak self] result in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "BluetoothPortManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
+            }
+            switch result {
+            case .success(let data):
+                self.bluetoothManage.clenReceiveInfo()
+                completion(.success(data))
+            case .failure(let error):
+                completion(.failure(error))
+            }
         }
     }
     
@@ -58,8 +60,8 @@ class BluetoothPortManage: IPortManage, @unchecked Sendable {
         bluetoothManage.close()
     }
     
-    func startScan() async -> Bool {
-        return await bluetoothManage.startScan()
+    func startScan(completion: @escaping (Bool) -> Void) {
+        bluetoothManage.startScan(completion: completion)
     }
     
     // 停止扫描（蓝牙不需要停止扫描）
@@ -67,32 +69,28 @@ class BluetoothPortManage: IPortManage, @unchecked Sendable {
         print("Bluetooth scan - no need to stop")
     }
     
-    // 获取扫描结果数据流（蓝牙返回已连接的设备）
-    @available(iOS 13.0, *)
-    func getScanResultStream() -> AsyncStream<[Any]>? {
+    // 设置扫描结果回调（替代AsyncStream以支持iOS 12.0）
+    func setScanResultCallback(_ callback: @escaping ([Any]) -> Void) {
         // 对于 External Accessory 框架，我们返回已连接的设备
-        // 虽然不能主动扫描，但可以提供已连接设备的数据流
-        return AsyncStream<[Any]> { continuation in
-            Task { @Sendable in
-                // 立即返回已连接的设备
-                let connectedAccessories = self.bluetoothManage.getConnectedAccessories()
-                continuation.yield(connectedAccessories)
-                
-                // 对于蓝牙，我们不需要持续监听，因为 External Accessory 框架
-                // 不支持主动扫描新设备，只能获取已连接的设备
-                continuation.finish()
+        // 虽然不能主动扫描，但可以提供已连接设备
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                callback([])
+                return
             }
+            let connectedAccessories = self.bluetoothManage.getConnectedAccessories()
+            callback(connectedAccessories)
         }
     }
     
-    func reconnect() async -> Result<Void, ConnectError> {
+    func reconnect(completion: @escaping (Result<Void, ConnectError>) -> Void) {
         // BluetoothPortManage 暂不支持重连，返回失败
-        return .failure(.connectionFailed(NSError(domain: "BluetoothPortManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Reconnect not supported for Bluetooth"])))
+        completion(.failure(.connectionFailed(NSError(domain: "BluetoothPortManage", code: -1, userInfo: [NSLocalizedDescriptionKey: "Reconnect not supported for Bluetooth"]))))
     }
     
-    func getBleDeviceInfo() async -> BleDeviceInfo? {
+    func getBleDeviceInfo(completion: @escaping (BleDeviceInfo?) -> Void) {
         // 蓝牙连接不支持 BLE 设备信息
-        return nil
+        completion(nil)
     }
     
     // MARK: - BLE 信息变更回调实现（蓝牙不支持，提供空实现）

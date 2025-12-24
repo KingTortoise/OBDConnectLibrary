@@ -48,9 +48,15 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
     public func checkAndRequestPermission(callback: @escaping BluetoothPermissionCallback){
         let status = checkPermission()
         switch status {
-        case .unauthorized, .unknown:
+        case .unknown:
+            // iOS 12: 状态未知，等待 centralManagerDidUpdateState 回调
+            // iOS 13+: 等待权限弹窗或状态更新
             permissonCallback = callback
             triggerPermissionRequest()
+        case .unauthorized:
+            // iOS 12: 没有权限弹窗，直接返回状态让调用方处理（显示 Alert 引导用户去设置）
+            // iOS 13+: 用户拒绝了权限，直接返回状态
+            callback(status)
         default:
             callback(status)
         }
@@ -66,22 +72,34 @@ public class BluetoothPermissionManager: NSObject, CBCentralManagerDelegate, @un
                 return .unknown
             }
         } else {
-            /// iOS 12及以下 BLE 默认返回 .allowedAlways
-            /// 所以这里只需要判断 传统蓝牙权限
-            let accessoryManager = EAAccessoryManager.shared()
-            let connectedAccessories = accessoryManager.connectedAccessories
-            // 已有连接，说明已授权
-            if !connectedAccessories.isEmpty {
-                return .poweredOn
+            /// iOS 12及以下：BLE 权限不需要用户授权，但需要检查 CBCentralManager 的实际状态
+            /// 在 iOS 12 上，CBCentralManager.state 可以反映蓝牙的实际状态：
+            /// - .poweredOn: 蓝牙已开启且可用
+            /// - .poweredOff: 蓝牙已关闭
+            /// - .unauthorized: 用户拒绝了权限（虽然 iOS 12 没有 BLE 权限弹窗，但可能通过其他方式拒绝）
+            /// - .unsupported: 设备不支持蓝牙
+            /// - .unknown: 状态未知，需要等待初始化完成
+            /// - .resetting: 蓝牙正在重置
+            if let central = centralManager {
+                return central.state
+            } else {
+                // 如果 centralManager 未初始化，先初始化它
+                setupManagers()
+                return .unknown
             }
-            return .unauthorized
         }
     }
     
     public func triggerPermissionRequest() {
         // 初始化或重新初始化 CBCentralManager 触发权限请求
+        // iOS 13+: 会触发权限弹窗
+        // iOS 12: 不会触发权限弹窗，但会初始化 CBCentralManager 并等待状态更新
         if centralManager == nil {
-            centralManager = CBCentralManager(delegate: self, queue: .main)
+            setupManagers()
+        } else {
+            // 如果已经初始化，重新初始化以触发状态更新
+            centralManager = nil
+            setupManagers()
         }
     }
     

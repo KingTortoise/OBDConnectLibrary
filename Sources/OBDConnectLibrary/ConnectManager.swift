@@ -22,7 +22,6 @@ public struct VlContext {
     public var port: IPortManage?
 }
 
-@available(macOS 10.15, *)
 public class ConnectManager: @unchecked Sendable {
     
     // 单例实例（全局唯一）
@@ -33,11 +32,12 @@ public class ConnectManager: @unchecked Sendable {
     
     public init() {}
     
-    // 初始化管理器
-    public func initManager(type: Int, context: Any) async throws -> Bool {
+    // 初始化管理器（使用回调替代async/await以支持iOS 12.0）
+    public func initManager(type: Int, context: Any, completion: @escaping (Result<Bool, Error>) -> Void) {
         if let globalContext = globalContext {
             if globalContext.type == type && globalContext.isOpen {
-                return true
+                completion(.success(true))
+                return
             } else {
                 close()
             }
@@ -55,7 +55,8 @@ public class ConnectManager: @unchecked Sendable {
         }
         
         guard let manager = manager else {
-            throw NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid type."])
+            completion(.failure(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid type."])))
+            return
         }
         let context = VlContext(
             type: type,
@@ -65,24 +66,30 @@ public class ConnectManager: @unchecked Sendable {
                     
         )
         self.globalContext = context
-        return true
+        completion(.success(true))
     }
     
-    // 连接
-    public func connect(name: String, peripheral: CBPeripheral?, context: Any) async -> Result<Void, ConnectError> {
+    // 连接（使用回调替代async/await以支持iOS 12.0）
+    public func connect(name: String, peripheral: CBPeripheral?, context: Any, completion: @escaping (Result<Void, ConnectError>) -> Void) {
         guard let port = globalContext?.port else {
-            return .failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
+            completion(.failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"]))))
+            return
         }
         
-        let connectSuccess = await port.open(context: context, name: name, peripheral: peripheral)
-        switch connectSuccess {
-        case .success():
-            globalContext?.isOpen = true
-            return .success(())
-            
-        case .failure(let error):
-            globalContext?.isOpen = false
-            return .failure(error)
+        port.open(context: context, name: name, peripheral: peripheral) { [weak self] result in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
+            }
+            switch result {
+            case .success():
+                self.globalContext?.isOpen = true
+                completion(.success(()))
+                
+            case .failure(let error):
+                self.globalContext?.isOpen = false
+                completion(.failure(error))
+            }
         }
     }
     
@@ -97,53 +104,49 @@ public class ConnectManager: @unchecked Sendable {
         return port.write(data: data, timeout: timeout)
     }
     
-    // 获取数据流
-    @available(iOS 13.0, *)
-    public func receiveDataFlow() -> AsyncStream<Data> {
-        
+    // 获取数据流（使用回调替代AsyncStream以支持iOS 12.0）
+    public func receiveDataFlow(callback: @escaping (Data) -> Void, onFinish: @escaping () -> Void) {
         guard let port = globalContext?.port else {
-            return AsyncStream<Data> { continuation in
-                continuation.finish()
-            }
+            onFinish()
+            return
         }
-        let stream = port.receiveDataFlow()
+        port.receiveDataFlow(callback: callback, onFinish: onFinish)
+    }
+    
+    // 接收响应（使用回调替代async/await以支持iOS 12.0）
+    public func read(timeout: TimeInterval, completion: @escaping (Result<String?, ConnectError>) -> Void) {
+        guard let port = globalContext?.port else {
+            completion(.success(nil))
+            return
+        }
         
-        return AsyncStream<Data> { continuation in
-            Task {
-                for await data in stream {
-                    continuation.yield(data)
+        port.read(timeout: timeout) { result in
+            switch result {
+            case .success(let data):
+                if let data = data {
+                    let result = String(data: data, encoding: .utf8)
+                    guard let result = result else {
+                        completion(.success(nil))
+                        return
+                    }
+                    completion(.success(result.isEmpty ? nil : result))
+                } else {
+                    completion(.success(nil))
                 }
-                continuation.finish()
+            case .failure(let error):
+                completion(.failure(error))
             }
         }
     }
     
-    // 接收响应
-    public func read(timeout: TimeInterval) async -> Result<String?, ConnectError>{
-        let readSuccess = await globalContext?.port?.read(timeout: timeout)
-        switch readSuccess {
-        case .success(let data):
-            if data != nil {
-                let result = String(data: data!, encoding: .utf8)
-                guard let result = result else { return .success(nil) }
-                return result.isEmpty  ? .success(nil) : .success(result)
-            } else {
-                return .success(nil)
-            }
-        case .failure(let error):
-            return .failure(error)
-        case .none:
-            return .success(nil)
-        }
-    }
-    
-    // 开始扫描设备
-    public func startScan() async -> Bool {
+    // 开始扫描设备（使用回调替代async/await以支持iOS 12.0）
+    public func startScan(completion: @escaping (Bool) -> Void) {
         guard let port = globalContext?.port else {
-            return false
+            completion(false)
+            return
         }
         
-        return await port.startScan()
+        port.startScan(completion: completion)
     }
     
     // 停止扫描设备
@@ -152,10 +155,9 @@ public class ConnectManager: @unchecked Sendable {
     }
     
     
-    // 获取扫描结果数据流
-    @available(iOS 13.0, *)
-    public func getScanResultStream() -> AsyncStream<[Any]>? {
-        return globalContext?.port?.getScanResultStream()
+    // 设置扫描结果回调（替代AsyncStream以支持iOS 12.0）
+    public func setScanResultCallback(_ callback: @escaping ([Any]) -> Void) {
+        globalContext?.port?.setScanResultCallback(callback)
     }
     
     // 设置设备断开回调
@@ -170,30 +172,53 @@ public class ConnectManager: @unchecked Sendable {
         }
     }
     
-    // 重连方法
-    public func reconnect() async -> Result<Void, ConnectError> {
-        guard let port = globalContext?.port else {
-            return .failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"])))
-        }
-        
-        let reconnectResult = await port.reconnect()
-        switch reconnectResult {
-        case .success():
-            globalContext?.isOpen = true
-            return .success(())
-        case .failure(let error):
-            globalContext?.isOpen = false
-            return .failure(error)
+    // 设置 BLE 设备 RSSI 更新回调
+    // 只有当前端口为 BLEPortManage 时才生效，其他连接类型会被忽略
+    public func setOnBleRssiUpdate(_ callback: @escaping (Int) -> Void) {
+        if let blePortManage = globalContext?.port as? BLEPortManage {
+            blePortManage.onHandleRssiUpdate = callback
         }
     }
     
-    // 获取 BLE 设备信息
-    public func getBleDeviceInfo() async -> BleDeviceInfo? {
+    // 触发一次当前 BLE 连接的 RSSI 读取
+    // 读取结果会通过 setOnBleRssiUpdate 设置的回调异步返回
+    public func readCurrentBleRssi() {
+        if let blePortManage = globalContext?.port as? BLEPortManage {
+            blePortManage.readCurrentRssi()
+        }
+    }
+    
+    // 重连方法（使用回调替代async/await以支持iOS 12.0）
+    public func reconnect(completion: @escaping (Result<Void, ConnectError>) -> Void) {
         guard let port = globalContext?.port else {
-            return nil
+            completion(.failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Port is nil"]))))
+            return
         }
         
-        return await port.getBleDeviceInfo()
+        port.reconnect { [weak self] result in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "ConnectManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
+            }
+            switch result {
+            case .success():
+                self.globalContext?.isOpen = true
+                completion(.success(()))
+            case .failure(let error):
+                self.globalContext?.isOpen = false
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    // 获取 BLE 设备信息（使用回调替代async/await以支持iOS 12.0）
+    public func getBleDeviceInfo(completion: @escaping (BleDeviceInfo?) -> Void) {
+        guard let port = globalContext?.port else {
+            completion(nil)
+            return
+        }
+        
+        port.getBleDeviceInfo(completion: completion)
     }
     
     // 更改 BLE 写入信息

@@ -13,18 +13,16 @@ public protocol IPortManage {
     // 设备断开回调
     var onDeviceDisconnect: (() -> Void)? { get set }
     
-    func open(context: Any, name: String, peripheral: CBPeripheral?) async -> Result<Void, ConnectError>
+    func open(context: Any, name: String, peripheral: CBPeripheral?, completion: @escaping (Result<Void, ConnectError>) -> Void)
     func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError>
-    func read(timeout: TimeInterval) async -> Result<Data?, ConnectError>
+    func read(timeout: TimeInterval, completion: @escaping (Result<Data?, ConnectError>) -> Void)
     func close()
-    func startScan() async -> Bool
+    func startScan(completion: @escaping (Bool) -> Void)
     func stopScan()
-    @available(iOS 13.0, *)
-    func getScanResultStream() -> AsyncStream<[Any]>?
-    @available(iOS 13.0, *)
-    func receiveDataFlow() -> AsyncStream<Data>
-    func reconnect() async -> Result<Void, ConnectError>
-    func getBleDeviceInfo() async -> BleDeviceInfo?
+    func setScanResultCallback(_ callback: @escaping ([Any]) -> Void)
+    func receiveDataFlow(callback: @escaping (Data) -> Void, onFinish: @escaping () -> Void)
+    func reconnect(completion: @escaping (Result<Void, ConnectError>) -> Void)
+    func getBleDeviceInfo(completion: @escaping (BleDeviceInfo?) -> Void)
     
     // BLE 写入信息变更回调
     func onChangeBleWriteInfo(characteristicUuid: String, propertyName: String, isActive: Bool)

@@ -51,29 +51,32 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
     }
     
     // 等待后台线程和 RunLoop 准备就绪
-    private func waitForStreamThreadReady(timeout: TimeInterval = 2.0) async -> Bool {
-        await wait(unit: { [weak self] in
+    private func waitForStreamThreadReady(timeout: TimeInterval = 2.0, completion: @escaping (Bool) -> Void) {
+        wait(unit: { [weak self] in
             guard let self = self else { return false }
             if self.streamThread?.isExecuting == true {
                 return true
             } else {
                 return false
             }
-        }, timeout: timeout)
+        }, timeout: timeout, completion: completion)
     }
    
     
-    func open(name: String) async -> Result<Void, ConnectError> {
+    func open(name: String, completion: @escaping (Result<Void, ConnectError>) -> Void) {
         let connectState = syncQueue.sync { state }
         if connectState == .connected {
-            return .success(())
+            completion(.success(()))
+            return
         }
         if connectState == .connecting {
-            return .failure(.connecting)
+            completion(.failure(.connecting))
+            return
         }
         mName = name.components(separatedBy: ":").filter{ !$0.isEmpty }
         guard !mName.isEmpty else {
-            return .failure(.invalidData)
+            completion(.failure(.invalidData))
+            return
         }
         var connectProtocolString = ""
         for eaAccessory in accessoryManager.connectedAccessories {
@@ -86,33 +89,43 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
             }
         }
         guard connectedAccessory != nil, connectProtocolString != ""  else {
-            return .failure(.noCompatibleDevices)
+            completion(.failure(.noCompatibleDevices))
+            return
         }
         // 等待线程的RunLoop准备就绪
-        guard await waitForStreamThreadReady() else {
-            return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."])))
-        }
-        
-        syncQueue.sync {
-            self.state = .connecting
-        }
-        mSession = EASession.init(accessory: connectedAccessory!, forProtocol: connectProtocolString)
-        if let session = mSession {
-            inputStream = session.inputStream
-            outputStream = session.outputStream
-            guard let inputStream = inputStream, let outputStream = outputStream else {
-                return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."])))
+        waitForStreamThreadReady { [weak self] success in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
             }
-            inputStream.delegate = self
-            inputStream.schedule(in: self.streamRunLoop, forMode: .default)
-            inputStream.open()
             
-            outputStream.delegate = self
-            outputStream.schedule(in: self.streamRunLoop, forMode: .default)
-            outputStream.open()
-            return .success(())
-        } else {
-            return .failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "EASession init failed."])))
+            guard success else {
+                completion(.failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."]))))
+                return
+            }
+            
+            self.syncQueue.sync {
+                self.state = .connecting
+            }
+            self.mSession = EASession.init(accessory: self.connectedAccessory!, forProtocol: connectProtocolString)
+            if let session = self.mSession {
+                self.inputStream = session.inputStream
+                self.outputStream = session.outputStream
+                guard let inputStream = self.inputStream, let outputStream = self.outputStream else {
+                    completion(.failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."]))))
+                    return
+                }
+                inputStream.delegate = self
+                inputStream.schedule(in: self.streamRunLoop, forMode: .default)
+                inputStream.open()
+                
+                outputStream.delegate = self
+                outputStream.schedule(in: self.streamRunLoop, forMode: .default)
+                outputStream.open()
+                completion(.success(()))
+            } else {
+                completion(.failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "EASession init failed."]))))
+            }
         }
     }
     
@@ -155,8 +168,8 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         return result
     }
     
-    func waitForReadData(timeout: TimeInterval = 10.0) async -> Bool {
-        await wait(unit: { [weak self] in
+    func waitForReadData(timeout: TimeInterval = 10.0, completion: @escaping (Bool) -> Void) {
+        wait(unit: { [weak self] in
             guard let self = self else { return false }
             return self.syncQueue.sync {
                 if self.receiveBuffer.count > 0 {
@@ -170,22 +183,30 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
                     return false
                 }
             }
-        }, timeout: timeout)
+        }, timeout: timeout, completion: completion)
     }
     
-    func read(timeout: TimeInterval) async -> Result<Data, ConnectError> {
+    func read(timeout: TimeInterval, completion: @escaping (Result<Data, ConnectError>) -> Void) {
         let currentState = syncQueue.sync {state}
         guard currentState == .connected, let inputStream = inputStream, isOpened() else {
             clenReceiveInfo()
-            return .failure(.notConnected)
+            completion(.failure(.notConnected))
+            return
         }
         
-        guard await waitForReadData() else {
-            clenReceiveInfo()
-            return .failure(.receiveTimeout)
+        waitForReadData(timeout: timeout) { [weak self] success in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "BluetoothManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
+            }
+            guard success else {
+                self.clenReceiveInfo()
+                completion(.failure(.receiveTimeout))
+                return
+            }
+            let result = self.syncQueue.sync {self.receiveBuffer}
+            completion(.success(result))
         }
-        let result = syncQueue.sync {receiveBuffer}
-        return .success(result)
     }
     
     func clenReceiveInfo() {
@@ -221,7 +242,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
     }
     
     // 开始扫描蓝牙设备
-    func startScan() async -> Bool {
+    func startScan(completion: @escaping (Bool) -> Void) {
         // 获取已连接的蓝牙设备
         let connectedAccessories = accessoryManager.connectedAccessories
         print("Found \(connectedAccessories.count) connected Bluetooth accessories")
@@ -234,7 +255,7 @@ class BluetoothManage: NSObject, StreamDelegate,@unchecked Sendable {
         
         // 对于 External Accessory 框架，我们只能获取已连接的设备
         // 实际的"扫描"就是检查已连接的设备
-        return !connectedAccessories.isEmpty
+        completion(!connectedAccessories.isEmpty)
     }
     
     // 获取已连接的设备

@@ -46,28 +46,28 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
         streamThread.start()
     }
     
-    func waitForInputStream(timeout: TimeInterval = 5.0)  async -> Bool  {
-        await wait(unit: { [weak self] () -> Bool in
+    func waitForInputStream(timeout: TimeInterval = 5.0, completion: @escaping (Bool) -> Void) {
+        wait(unit: { [weak self] () -> Bool in
             return self?.syncQueue.sync {
                 self?.state == .connected
             } ?? false
-        }, timeout: timeout)
+        }, timeout: timeout, completion: completion)
     }
     
     // 等待后台线程和 RunLoop 准备就绪
-    private func waitForStreamThreadReady(timeout: TimeInterval = 2.0) async -> Bool {
-        await wait(unit: { [weak self] in
+    private func waitForStreamThreadReady(timeout: TimeInterval = 2.0, completion: @escaping (Bool) -> Void) {
+        wait(unit: { [weak self] in
             guard let self = self else { return false }
             if self.streamThread?.isExecuting == true {
                 return true
             } else {
                 return false
             }
-        }, timeout: timeout)
+        }, timeout: timeout, completion: completion)
     }
     
-    func waitForReadData(timeout: TimeInterval = 10.0) async -> Bool {
-        await wait(unit: { [weak self] in
+    func waitForReadData(timeout: TimeInterval = 10.0, completion: @escaping (Bool) -> Void) {
+        wait(unit: { [weak self] in
             guard let self = self else { return false }
             return self.syncQueue.sync {
                 if self.receiveBuffer.count > 0 {
@@ -81,36 +81,52 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
                     return false
                 }
             }
-        }, timeout: timeout)
+        }, timeout: timeout, completion: completion)
     }
     
-    func openChannel(name: String, timeout: TimeInterval) async -> Result<Void, ConnectError> {
+    func openChannel(name: String, timeout: TimeInterval, completion: @escaping (Result<Void, ConnectError>) -> Void) {
         let connectState = syncQueue.sync { state }
         if connectState == .connected {
-            return .success(())
+            completion(.success(()))
+            return
         }
         if connectState == .connecting {
-            return .failure(.connecting)
+            completion(.failure(.connecting))
+            return
         }
         
         let info = name.components(separatedBy: ":")
         guard info.count >= 2 else {
-            return .failure(.invalidName)
+            completion(.failure(.invalidName))
+            return
         }
         
         let host = info[0] as CFString
-        if let port = UInt32(info[1]) {
-            // 等待线程的RunLoop准备就绪
-            guard await waitForStreamThreadReady() else {
-                return .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."])))
+        guard let port = UInt32(info[1]) else {
+            completion(.failure(.invalidName))
+            return
+        }
+        
+        // 等待线程的RunLoop准备就绪
+        waitForStreamThreadReady { [weak self] success in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
             }
+            
+            guard success else {
+                completion(.failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Thread init failed."]))))
+                return
+            }
+            
             self.syncQueue.sync { self.state = .connecting }
             var readStream: Unmanaged<CFReadStream>?
             var writeStream: Unmanaged<CFWriteStream>?
             CFStreamCreatePairWithSocketToHost(kCFAllocatorDefault, host, port, &readStream, &writeStream)
             guard let input = readStream?.takeRetainedValue(), let output = writeStream?.takeRetainedValue()  else {
                 self.syncQueue.sync { self.state = .disconnected }
-                return .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."])))
+                completion(.failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Stream init failed."]))))
+                return
             }
             self.inputStream = input
             self.outputStream = output
@@ -121,11 +137,15 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
             
             self.inputStream?.open()
             self.outputStream?.open()
-            let connectSuccess = await waitForInputStream(timeout: timeout)
-            return connectSuccess ?  .success(()) :  .failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No status change notification received."])))
-        } else {
-            return .failure(.invalidName)
-        }           
+            
+            self.waitForInputStream(timeout: timeout) { success in
+                if success {
+                    completion(.success(()))
+                } else {
+                    completion(.failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No status change notification received."]))))
+                }
+            }
+        }
     }
     
     func write(data: Data, timeout: TimeInterval) -> Result<Void, ConnectError> {
@@ -168,16 +188,24 @@ class TcpManage: NSObject, StreamDelegate, @unchecked Sendable {
     }
     
     // 接收数据
-    func read(timeout: TimeInterval) async -> Result<Data, ConnectError> {
+    func read(timeout: TimeInterval, completion: @escaping (Result<Data, ConnectError>) -> Void) {
         let currentState = syncQueue.sync { state }
         guard currentState == .connected else {
-            return .failure(.notConnected)
+            completion(.failure(.notConnected))
+            return
         }
-        guard await waitForReadData() else {
-            clenReceiveInfo()
-            return .failure(.receiveTimeout)
+        waitForReadData(timeout: timeout) { [weak self] success in
+            guard let self = self else {
+                completion(.failure(.connectionFailed(NSError(domain: "TcpManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manager deallocated"]))))
+                return
+            }
+            guard success else {
+                self.clenReceiveInfo()
+                completion(.failure(.receiveTimeout))
+                return
+            }
+            completion(.success(self.receiveBuffer))
         }
-        return .success(self.receiveBuffer)
     }
     
     func clenReceiveInfo() {

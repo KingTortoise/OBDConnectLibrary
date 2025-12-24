@@ -6,24 +6,36 @@
 //
 import Foundation
 // MARK: - 通用等待工具
-/// 通用等待函数：循环检查条件，直到满足或超时
+/// 通用等待函数：循环检查条件，直到满足或超时（使用回调替代async/await以支持iOS 12.0）
 /// - Parameters:
 ///     - condition: 等待的条件
 ///     - timeout: 超时时间
 ///     - interval: 检查间隔（默认0.1秒）
-///     - Returns: 是否在超时前满足条件
-func wait(unit condition: @escaping () -> Bool, timeout: TimeInterval, interval: TimeInterval = 0.1) async -> Bool {
+///     - completion: 完成回调，返回是否在超时前满足条件
+func wait(unit condition: @escaping () -> Bool, timeout: TimeInterval, interval: TimeInterval = 0.1, completion: @escaping (Bool) -> Void) {
     let startTime = Date()
-    while true {
-        if condition() {
-            return true // 条件满足， 返回成功
+    let queue = DispatchQueue(label: "com.obdconnect.wait", qos: .userInitiated)
+    
+    func checkCondition() {
+        queue.async {
+            if condition() {
+                completion(true) // 条件满足，返回成功
+                return
+            }
+            
+            // 检查超时
+            let elapsed = Date().timeIntervalSince(startTime)
+            if elapsed >= timeout {
+                completion(false) // 超时，返回失败
+                return
+            }
+            
+            // 等待间隔后重试
+            queue.asyncAfter(deadline: .now() + interval) {
+                checkCondition()
+            }
         }
-        // 检查超时
-        let elapsed = Date().timeIntervalSince(startTime)
-        if elapsed >= timeout {
-            return false // 超时，返回失败
-        }
-        // 等待间隔后重试（非阻塞）
-        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
     }
+    
+    checkCondition()
 }
