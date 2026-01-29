@@ -23,7 +23,7 @@ import Foundation
 public enum ConnectType: Int {
     /// WiFi/TCP 连接
     case wifi = 0
-    /// 经典蓝牙（iOS 不支持，保留枚举值）
+    /// 经典蓝牙 MFi (External Accessory)
     case bt = 1
     /// BLE 蓝牙低功耗
     case ble = 2
@@ -154,9 +154,8 @@ public class ConnectManager: @unchecked Sendable {
         let manager: PortManageProtocol?
         switch type {
         case .bt:
-            // iOS 不支持经典蓝牙 SPP
-            logW("ConnectManager: Classic Bluetooth (SPP) is not supported on iOS")
-            manager = nil
+            // MFi 经典蓝牙 (External Accessory)
+            manager = MFiPortManage()
         case .ble:
             manager = BLEPortManage()
         case .wifi:
