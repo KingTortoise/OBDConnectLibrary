@@ -229,6 +229,20 @@ public class BLEManager: NSObject, @unchecked Sendable {
             return
         }
         
+        // 确保 centralManager 已初始化
+        guard centralManager != nil else {
+            logE("\(TAG): centralManager is nil, initializing...")
+            if !initBluetooth() {
+                completion(.failure(.bluetoothUnavailable))
+                return
+            }
+            // 延迟重试以等待 centralManager 就绪
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.connectDevice(identifier: identifier, timeout: timeout, completion: completion)
+            }
+            return
+        }
+        
         stopScan()
         readWriteCharacteristic = nil
         addressForAccepted = nil

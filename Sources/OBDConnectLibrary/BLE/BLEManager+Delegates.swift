@@ -45,7 +45,10 @@ extension BLEManager: CBCentralManagerDelegate {
     
     /// 发现外设回调
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let deviceWithRssi = BLEDeviceWithRssi(peripheral: peripheral, rssi: RSSI.intValue)
+        // iOS CoreBluetooth 在 RSSI 无效时返回 127，需要过滤
+        // 对应 Android 中使用 -100 作为已配对但未扫描设备的默认 RSSI
+        let rssiValue = RSSI.intValue == 127 ? -100 : RSSI.intValue
+        let deviceWithRssi = BLEDeviceWithRssi(peripheral: peripheral, rssi: rssiValue)
         
         scanLock.lock()
         scanResultCache[peripheral.identifier] = advertisementData
