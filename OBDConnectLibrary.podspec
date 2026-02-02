@@ -17,8 +17,8 @@ Pod::Spec.new do |s|
   s.ios.deployment_target = '12.0'
   s.swift_version = '5.7'
 
-  # 源代码位置
-  s.source_files = 'Sources/OBDConnectLibrary/*.swift'
+  # 源代码位置 - 包含所有子目录
+  s.source_files = 'Sources/OBDConnectLibrary/**/*.swift'
 
   # 系统框架依赖
   s.frameworks = 'CoreBluetooth', 'ExternalAccessory'
