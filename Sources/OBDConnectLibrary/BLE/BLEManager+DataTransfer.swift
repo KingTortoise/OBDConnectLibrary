@@ -198,6 +198,9 @@ extension BLEManager {
     }
     
     /// 等待设备响应
+    /// 
+    /// 当 notifyUUID == writeUUID 时，需要等待设备响应后再发送下一片数据。
+    /// 通过检查 isWaitingResponse 标志来判断是否收到响应（在 didUpdateValueFor 中被置为 false）。
     private func waitForBlockResponse(timeout: TimeInterval, completion: @escaping (Result<Bool, ConnectError>) -> Void) {
         let startTime = Date()
         var hasCompleted = false
@@ -205,16 +208,14 @@ extension BLEManager {
         func checkResponse() {
             if hasCompleted { return }
             
-            self.readQueueLock.lock()
-            let hasData = !self.readQueueBuffer.isEmpty
-            self.readQueueLock.unlock()
-            
-            if hasData {
+            // 检查是否已收到响应（isWaitingResponse 在 didUpdateValueFor 中被置为 false）
+            if !self.isWaitingResponse {
                 hasCompleted = true
                 completion(.success(true))
                 return
             }
             
+            // 超时检测
             if Date().timeIntervalSince(startTime) > timeout {
                 hasCompleted = true
                 logE("\(self.TAG): waitForBlockResponse timeout after \(timeout)s")
@@ -233,64 +234,3 @@ extension BLEManager {
     }
 }
 
-// MARK: - Receive Data
-
-extension BLEManager {
-    
-    /// 启动数据接收监听
-    ///
-    /// 数据通过 onDataReceived 回调返回。
-    public func startReceiveDataMonitoring() {
-        guard isConnected else {
-            logW("\(TAG): startReceiveDataMonitoring: not connected")
-            return
-        }
-        
-        var lastReceiveTime = Date()
-        var lastIsWaiting = false
-        
-        func pollData() {
-            guard self.isConnected else {
-                self.readQueueLock.lock()
-                self.readQueueBuffer.removeAll()
-                self.readQueueLock.unlock()
-                logD("\(self.TAG): receiveDataFlow stopped, buffers cleared")
-                return
-            }
-            
-            // 检查等待状态转换
-            let isWaiting = self.isWaitingResponse
-            if isWaiting && !lastIsWaiting {
-                lastReceiveTime = Date()
-            }
-            lastIsWaiting = isWaiting
-            
-            // 从队列读取所有可用数据
-            self.readQueueLock.lock()
-            let batch = self.readQueueBuffer
-            self.readQueueBuffer.removeAll()
-            self.readQueueLock.unlock()
-            
-            if !batch.isEmpty {
-                lastReceiveTime = Date()
-                self.isWaitingResponse = false
-                let data = Data(batch)
-                self.onDataReceived?(data)
-            } else {
-                // 超时检测
-                if isWaiting && Date().timeIntervalSince(lastReceiveTime) > self.RECEIVE_TIMEOUT {
-                    self.isWaitingResponse = false
-                    logE("\(self.TAG): Receive timeout: no data received within \(self.RECEIVE_TIMEOUT)s")
-                }
-            }
-            
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) {
-                pollData()
-            }
-        }
-        
-        DispatchQueue.global().async {
-            pollData()
-        }
-    }
-}

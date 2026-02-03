@@ -82,8 +82,6 @@ public class BLEManager: NSObject, @unchecked Sendable {
     // MARK: - 5. 数据缓冲与并发控制
     // ==================================================================================
     
-    internal var readQueueBuffer: [UInt8] = []
-    internal let readQueueLock = NSLock()
     internal var writeQueueBuffer: [UInt8] = []
     internal let writeQueueLock = NSLock()
     internal var currentSendData: Data?

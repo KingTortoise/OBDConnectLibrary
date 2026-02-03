@@ -110,11 +110,6 @@ public class BLEPortManage: PortManageProtocol {
     
     // MARK: - BLE Specific Methods
     
-    /// 开始接收数据监听
-    public func startReceiveDataMonitoring() {
-        bleManager.startReceiveDataMonitoring()
-    }
-    
     /// 获取 BLE 设备信息
     public func getBLEDeviceInfo(completion: @escaping @Sendable (BLEDeviceInfo) -> Void) {
         bleManager.getBLEDeviceInfo(completion: completion)

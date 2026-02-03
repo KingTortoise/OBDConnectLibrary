@@ -191,11 +191,10 @@ extension BLEManager: CBPeripheralDelegate {
         
         logD("\(TAG): onCharChange: \(String(data: value, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? HexDump.toHexString(value))")
         
+        // 直接触发回调，就像 Android 的 onCharacteristicChanged 一样简单
         if characteristic.uuid == notifyUUID {
-            readQueueLock.lock()
-            readQueueBuffer.append(contentsOf: value)
-            logD("\(TAG): Added \(value.count) bytes to read queue (queue size now: \(readQueueBuffer.count))")
-            readQueueLock.unlock()
+            isWaitingResponse = false
+            onDataReceived?(value)
         }
     }
     

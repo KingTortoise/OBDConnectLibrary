@@ -113,10 +113,6 @@ extension BLEManager {
         stopRssiMonitoring()
         centralManager?.cancelPeripheralConnection(peripheral)
         
-        readQueueLock.lock()
-        readQueueBuffer.removeAll()
-        readQueueLock.unlock()
-        
         writeQueueLock.lock()
         writeQueueBuffer.removeAll()
         writeQueueLock.unlock()
