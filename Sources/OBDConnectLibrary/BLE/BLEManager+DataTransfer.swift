@@ -177,23 +177,20 @@ extension BLEManager {
         // 执行写入
         connectedPeripheral?.writeValue(dataArray, for: characteristic, type: currentWriteType)
         
-        // 对于无响应写入，需要手动完成
+        // 对于无响应写入，iOS 不会触发 didWriteValueFor 回调，需要手动完成
+        // writeValue 已将数据交给 CoreBluetooth buffer，可以立即回调
         if currentWriteType == .withoutResponse {
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                guard let self = self else { return }
-                
-                self.writeQueueLock.lock()
-                self.writeQueueBuffer.removeAll()
-                self.writeQueueLock.unlock()
-                
-                self.sendDataLock.lock()
-                self.currentSendData = nil
-                self.sendDataLock.unlock()
-                
-                let callback = self.writeCompletion
-                self.writeCompletion = nil
-                callback?(.success(true))
-            }
+            writeQueueLock.lock()
+            writeQueueBuffer.removeAll()
+            writeQueueLock.unlock()
+            
+            sendDataLock.lock()
+            currentSendData = nil
+            sendDataLock.unlock()
+            
+            let callback = writeCompletion
+            writeCompletion = nil
+            callback?(.success(true))
         }
     }
     

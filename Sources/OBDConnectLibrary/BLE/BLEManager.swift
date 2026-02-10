@@ -99,7 +99,7 @@ public class BLEManager: NSObject, @unchecked Sendable {
     // ==================================================================================
     
     internal var readWriteCharacteristic: CBCharacteristic?
-    internal var writeType: CBCharacteristicWriteType = .withResponse
+    internal var writeType: CBCharacteristicWriteType = .withoutResponse
     internal var mtu: Int = 185
     internal var notifyUUID: CBUUID?
     internal var writeUUID: CBUUID?
