@@ -317,9 +317,10 @@ extension BLEManager {
             propertyStatus["READ"] = true
         }
         
-        // 2. NOTIFY 属性
+        // 2. NOTIFY 属性（与 Android 一致：同时比较 service UUID 和 characteristic UUID）
         if characteristic.properties.contains(.notify) {
             let isSubscribed = subscriptionCaches.contains { cache in
+                cache.characteristic.service?.uuid == characteristic.service?.uuid &&
                 cache.characteristic.uuid == characteristic.uuid &&
                 cache.subscriptionType == "NOTIFY"
             }
@@ -329,22 +330,27 @@ extension BLEManager {
         // 3. INDICATE 属性
         if characteristic.properties.contains(.indicate) {
             let isSubscribed = subscriptionCaches.contains { cache in
+                cache.characteristic.service?.uuid == characteristic.service?.uuid &&
                 cache.characteristic.uuid == characteristic.uuid &&
                 cache.subscriptionType == "INDICATE"
             }
             propertyStatus["INDICATE"] = isSubscribed
         }
         
-        // 4. WRITE 属性
+        // 4. WRITE 属性（与 Android 一致：同时比较 service UUID）
         if characteristic.properties.contains(.write) {
-            let isActive = readWriteCharacteristic?.uuid == characteristic.uuid &&
+            let isActive = readWriteCharacteristic != nil &&
+                           readWriteCharacteristic?.uuid == characteristic.uuid &&
+                           readWriteCharacteristic?.service?.uuid == characteristic.service?.uuid &&
                            writeType == .withResponse
             propertyStatus["WRITE"] = isActive
         }
         
         // 5. WRITE_WITHOUT_RESPONSE 属性
         if characteristic.properties.contains(.writeWithoutResponse) {
-            let isActive = readWriteCharacteristic?.uuid == characteristic.uuid &&
+            let isActive = readWriteCharacteristic != nil &&
+                           readWriteCharacteristic?.uuid == characteristic.uuid &&
+                           readWriteCharacteristic?.service?.uuid == characteristic.service?.uuid &&
                            writeType == .withoutResponse
             propertyStatus["WRITE_WITHOUT_RESPONSE"] = isActive
         }

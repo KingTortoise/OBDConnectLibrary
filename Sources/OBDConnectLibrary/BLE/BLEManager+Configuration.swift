@@ -29,9 +29,12 @@ extension BLEManager {
         switch typeName {
         case CharacteristicProperty.write.displayName:
             writeType = .withResponse
+            logD("\(TAG): onChangeBLEWriteInfo: set writeType to .withResponse")
         case CharacteristicProperty.writeWithoutResponse.displayName:
             writeType = .withoutResponse
+            logD("\(TAG): onChangeBLEWriteInfo: set writeType to .withoutResponse")
         default:
+            logW("\(TAG): onChangeBLEWriteInfo: unknown typeName '\(typeName)', writeType unchanged")
             break
         }
         
@@ -97,12 +100,13 @@ extension BLEManager {
                 return
             }
             
-            // 开启通知
+            // 开启通知（iOS 的 setNotifyValue 内部处理 CCCD 描述符写入）
             peripheral.setNotifyValue(true, for: characteristic)
             
-            // 更新 notifyUUID（如果当前写入特征值匹配）
+            // 与 Android 保持一致：仅当该特征值与当前写入特征值匹配时更新 notifyUUID
             if characteristic.uuid == readWriteCharacteristic?.uuid {
                 notifyUUID = characteristic.uuid
+                logD("\(TAG): onChangeBLEDescriptorInfo: set notifyUUID to \(characteristic.uuid.uuidString)")
             }
             
             // 更新订阅缓存
@@ -141,7 +145,21 @@ extension BLEManager {
         
         // 从订阅缓存中移除
         subscriptionCaches.removeAll { $0.characteristic.uuid.uuidString == uuid }
-        notifyUUID = nil
+        
+        // 仅当被清除的订阅是当前 notifyUUID 时才更新 notifyUUID
+        if notifyUUID?.uuidString == uuid {
+            // 尝试从剩余订阅中找到一个在当前写入特征值同一 Service 下的替代
+            if let writeChar = readWriteCharacteristic,
+               let writeService = writeChar.service {
+                let matchingCache = subscriptionCaches.first { cache in
+                    writeService.characteristics?.contains(where: { $0.uuid == cache.characteristic.uuid }) ?? false
+                }
+                notifyUUID = matchingCache?.characteristic.uuid
+            } else {
+                notifyUUID = nil
+            }
+            logD("\(TAG): clearExistingSubscription: updated notifyUUID to \(notifyUUID?.uuidString ?? "nil")")
+        }
         
         logD("\(TAG): clearExistingSubscription: disabled notifications for \(uuid)")
     }
