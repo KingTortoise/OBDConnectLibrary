@@ -285,6 +285,7 @@ public class ConnectManager: @unchecked Sendable {
     /// - Note: 对应 Kotlin 的 `getBleDeviceInfo()`
     public func getBleDeviceInfo(completion: @escaping @Sendable (BLEDeviceInfo?) -> Void) {
         guard globalContext?.type == .ble,
+              globalContext?.isOpen == true,
               let blePort = globalContext?.port as? BLEPortManage else {
             completion(nil)
             return

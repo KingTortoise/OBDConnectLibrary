@@ -141,6 +141,7 @@ extension BLEManager {
         centralManager?.cancelPeripheralConnection(peripheral)
         connectedPeripheral = nil
         readWriteCharacteristic = nil
+        subscriptionCaches.removeAll()
         writeUUID = nil
         mtu = 185
     }
@@ -157,7 +158,12 @@ extension BLEManager {
     public func release() {
         closeChannel()
         stopRssiMonitoring()
+        // 先触发所有 pending 的读取回调，防止 DispatchGroup 卡死
+        let pendingCompletions = characteristicReadCompletions
         characteristicReadCompletions.removeAll()
+        for (_, completion) in pendingCompletions {
+            completion(nil)
+        }
     }
 }
 

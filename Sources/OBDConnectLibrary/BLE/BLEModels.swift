@@ -68,7 +68,7 @@ public struct BLEDeviceWithRssi: Hashable, Comparable {
 /// BLE 设备完整信息
 ///
 /// - Note: 对应 Kotlin 的 `data class BleDeviceInfo`
-public struct BLEDeviceInfo {
+public struct BLEDeviceInfo: Sendable {
     
     /// 广播数据（可能为 nil）
     public let broadcastData: BroadcastData?
@@ -97,7 +97,7 @@ public struct BLEDeviceInfo {
 /// BLE 广播数据
 ///
 /// - Note: 对应 Kotlin 的 `data class BroadcastData`
-public struct BroadcastData: Equatable {
+public struct BroadcastData: Equatable, @unchecked Sendable {
     
     /// 原始广播字节数组
     public let rawData: Data?
@@ -159,7 +159,7 @@ public struct BroadcastData: Equatable {
 /// BLE 设备信息服务数据（0x180A）
 ///
 /// - Note: 对应 Kotlin 的 `data class DeviceInfo`
-public struct DeviceInfo {
+public struct DeviceInfo: Sendable {
     
     /// 制造商名称
     public let manufacturerName: String?
@@ -228,7 +228,7 @@ public struct DeviceInfo {
 /// BLE 服务 DTO
 ///
 /// - Note: 对应 Kotlin 的 `data class BleServiceDto`
-public struct BLEServiceDto {
+public struct BLEServiceDto: Sendable {
     
     /// 服务 UUID
     public let serviceUUID: String
@@ -252,7 +252,7 @@ public struct BLEServiceDto {
 /// BLE 特征值 DTO
 ///
 /// - Note: 对应 Kotlin 的 `data class BleCharacteristicDto`
-public struct BLECharacteristicDto {
+public struct BLECharacteristicDto: Sendable {
     
     /// 特征值 UUID
     public let characteristicUUID: String

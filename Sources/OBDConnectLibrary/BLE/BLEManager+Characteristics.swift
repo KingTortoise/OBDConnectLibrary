@@ -139,9 +139,54 @@ extension BLEManager {
     ///
     /// - Parameter completion: 完成回调，返回设备信息
     public func getBLEDeviceInfo(completion: @escaping @Sendable (BLEDeviceInfo) -> Void) {
+        // 使用线程安全的类包装确保 completion 只被调用一次
+        class CompletionGuard: @unchecked Sendable {
+            private var hasCompleted = false
+            private let lock = NSLock()
+            private let completion: @Sendable (BLEDeviceInfo) -> Void
+            
+            init(completion: @escaping @Sendable (BLEDeviceInfo) -> Void) {
+                self.completion = completion
+            }
+            
+            func complete(with info: BLEDeviceInfo) {
+                lock.lock()
+                guard !hasCompleted else {
+                    lock.unlock()
+                    return
+                }
+                hasCompleted = true
+                lock.unlock()
+                DispatchQueue.main.async {
+                    self.completion(info)
+                }
+            }
+        }
+        
+        let guard_ = CompletionGuard(completion: completion)
+        let safeCompletion: @Sendable (BLEDeviceInfo) -> Void = { info in
+            guard_.complete(with: info)
+        }
+        
+        // 整体超时保护：10 秒后如果还未完成，返回空数据
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10.0) { [weak self] in
+            let broadcastData = self?.broadcastData
+            let deviceInfo = self?.deviceInfo
+            var serviceList: [BLEServiceDto] = []
+            if self != nil {
+                self?.buildServiceList()
+                serviceList = self?.serviceList ?? []
+            }
+            safeCompletion(BLEDeviceInfo(
+                broadcastData: broadcastData,
+                deviceInfo: deviceInfo,
+                serviceInfo: serviceList
+            ))
+        }
+        
         DispatchQueue.global().async { [weak self] in
             guard let self = self else {
-                completion(BLEDeviceInfo(broadcastData: nil, deviceInfo: nil, serviceInfo: []))
+                safeCompletion(BLEDeviceInfo(broadcastData: nil, deviceInfo: nil, serviceInfo: []))
                 return
             }
             
@@ -154,34 +199,31 @@ extension BLEManager {
                 self.scanLock.unlock()
             }
             
-            // 读取设备信息服务
-            if self.deviceInfo == nil, let peripheral = self.connectedPeripheral {
+            // 读取设备信息服务（必须确认仍然连接，避免访问已失效的 peripheral 数据导致 crash）
+            if self.deviceInfo == nil, self.isConnected, let peripheral = self.connectedPeripheral {
                 if let deviceInfoService = peripheral.services?.first(where: { $0.uuid == self.DEVICE_INFO_SERVICE_UUID }) {
                     self.readDeviceInfoFeatures(peripheral: peripheral, service: deviceInfoService) { [weak self] in
-                        guard let self = self else { return }
+                        guard let self = self else {
+                            safeCompletion(BLEDeviceInfo(broadcastData: nil, deviceInfo: nil, serviceInfo: []))
+                            return
+                        }
                         self.buildServiceList()
-                        let info = BLEDeviceInfo(
+                        safeCompletion(BLEDeviceInfo(
                             broadcastData: self.broadcastData,
                             deviceInfo: self.deviceInfo,
                             serviceInfo: self.serviceList
-                        )
-                        DispatchQueue.main.async {
-                            completion(info)
-                        }
+                        ))
                     }
                     return
                 }
             }
             
             self.buildServiceList()
-            let info = BLEDeviceInfo(
+            safeCompletion(BLEDeviceInfo(
                 broadcastData: self.broadcastData,
                 deviceInfo: self.deviceInfo,
                 serviceInfo: self.serviceList
-            )
-            DispatchQueue.main.async {
-                completion(info)
-            }
+            ))
         }
     }
     
@@ -267,11 +309,17 @@ extension BLEManager {
         characteristicReadCompletions[uuid] = completion
         peripheral.readValue(for: characteristic)
         
-        // 超时处理
+        // 超时处理：不依赖 [weak self]，确保 completion 一定被调用
+        // 即使 self 被释放，也需要触发 completion(nil) 以防止 DispatchGroup 卡死
         DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            if let pendingCompletion = self?.characteristicReadCompletions[uuid] {
-                self?.characteristicReadCompletions.removeValue(forKey: uuid)
-                pendingCompletion(nil)
+            if let self = self {
+                if let pendingCompletion = self.characteristicReadCompletions[uuid] {
+                    self.characteristicReadCompletions.removeValue(forKey: uuid)
+                    pendingCompletion(nil)
+                }
+            } else {
+                // self 已被释放，直接调用 completion 确保 DispatchGroup 不会卡死
+                completion(nil)
             }
         }
     }
@@ -280,7 +328,8 @@ extension BLEManager {
     private func buildServiceList() {
         serviceList.removeAll()
         
-        guard let peripheral = connectedPeripheral else { return }
+        // 必须确认仍然连接，断开后 peripheral.services 中的对象可能已被 CoreBluetooth 回收
+        guard isConnected, let peripheral = connectedPeripheral else { return }
         
         peripheral.services?.forEach { service in
             let hasMultiPropertyCharacteristic = service.characteristics?.contains { characteristic in
@@ -312,6 +361,16 @@ extension BLEManager {
     private func checkEachPropertyStatus(characteristic: CBCharacteristic) -> [String: Bool] {
         var propertyStatus: [String: Bool] = [:]
         
+        // 拷贝 subscriptionCaches 和 readWriteCharacteristic 到本地变量，
+        // 避免在遍历过程中被其他线程（closeGatt）修改导致竞态
+        let cachedSubscriptions = subscriptionCaches
+        let cachedRwChar = readWriteCharacteristic
+        let cachedWriteType = writeType
+        
+        // 安全获取当前特征的 UUID 字符串，避免直接在闭包中访问可能失效的对象
+        let charUUID = characteristic.uuid
+        let serviceUUID = characteristic.service?.uuid
+        
         // 1. 检查 READ 属性
         if characteristic.properties.contains(.read) {
             propertyStatus["READ"] = true
@@ -319,9 +378,9 @@ extension BLEManager {
         
         // 2. NOTIFY 属性（与 Android 一致：同时比较 service UUID 和 characteristic UUID）
         if characteristic.properties.contains(.notify) {
-            let isSubscribed = subscriptionCaches.contains { cache in
-                cache.characteristic.service?.uuid == characteristic.service?.uuid &&
-                cache.characteristic.uuid == characteristic.uuid &&
+            let isSubscribed = cachedSubscriptions.contains { cache in
+                cache.characteristic.service?.uuid == serviceUUID &&
+                cache.characteristic.uuid == charUUID &&
                 cache.subscriptionType == "NOTIFY"
             }
             propertyStatus["NOTIFY"] = isSubscribed
@@ -329,9 +388,9 @@ extension BLEManager {
         
         // 3. INDICATE 属性
         if characteristic.properties.contains(.indicate) {
-            let isSubscribed = subscriptionCaches.contains { cache in
-                cache.characteristic.service?.uuid == characteristic.service?.uuid &&
-                cache.characteristic.uuid == characteristic.uuid &&
+            let isSubscribed = cachedSubscriptions.contains { cache in
+                cache.characteristic.service?.uuid == serviceUUID &&
+                cache.characteristic.uuid == charUUID &&
                 cache.subscriptionType == "INDICATE"
             }
             propertyStatus["INDICATE"] = isSubscribed
@@ -339,19 +398,19 @@ extension BLEManager {
         
         // 4. WRITE 属性（与 Android 一致：同时比较 service UUID）
         if characteristic.properties.contains(.write) {
-            let isActive = readWriteCharacteristic != nil &&
-                           readWriteCharacteristic?.uuid == characteristic.uuid &&
-                           readWriteCharacteristic?.service?.uuid == characteristic.service?.uuid &&
-                           writeType == .withResponse
+            let isActive = cachedRwChar != nil &&
+                           cachedRwChar?.uuid == charUUID &&
+                           cachedRwChar?.service?.uuid == serviceUUID &&
+                           cachedWriteType == .withResponse
             propertyStatus["WRITE"] = isActive
         }
         
         // 5. WRITE_WITHOUT_RESPONSE 属性
         if characteristic.properties.contains(.writeWithoutResponse) {
-            let isActive = readWriteCharacteristic != nil &&
-                           readWriteCharacteristic?.uuid == characteristic.uuid &&
-                           readWriteCharacteristic?.service?.uuid == characteristic.service?.uuid &&
-                           writeType == .withoutResponse
+            let isActive = cachedRwChar != nil &&
+                           cachedRwChar?.uuid == charUUID &&
+                           cachedRwChar?.service?.uuid == serviceUUID &&
+                           cachedWriteType == .withoutResponse
             propertyStatus["WRITE_WITHOUT_RESPONSE"] = isActive
         }
         
