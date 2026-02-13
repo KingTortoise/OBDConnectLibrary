@@ -7,6 +7,12 @@
 //
 //  使用 ExternalAccessory.framework 实现 MFi 认证的经典蓝牙连接
 //
+//  线程模型：
+//  - 主线程：EAAccessory 通知、connectionState 变化、回调分发
+//  - workQueue：连接/重连操作、数据准备
+//  - MFiStreamThread：流事件处理、流读写
+//  - 所有流操作（open/read/write/close）必须在 MFiStreamThread 上执行
+//
 
 import Foundation
 import ExternalAccessory
@@ -37,8 +43,22 @@ public class MFiManager: NSObject {
     
     // MARK: - Properties
     
-    /// 连接状态
-    private(set) var connectionState: MFiConnectionState = .disconnected
+    /// 连接状态 - 使用 stateLock 保护
+    private var _connectionState: MFiConnectionState = .disconnected
+    private let stateLock = NSLock()
+    
+    private(set) var connectionState: MFiConnectionState {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _connectionState
+        }
+        set {
+            stateLock.lock()
+            _connectionState = newValue
+            stateLock.unlock()
+        }
+    }
     
     /// 已连接的配件
     private var connectedAccessory: EAAccessory?
@@ -67,6 +87,9 @@ public class MFiManager: NSObject {
     /// 上次接收数据时间
     private var lastReceiveTime: Date = Date()
     
+    /// 流状态锁 - 保护流相关属性的线程安全访问
+    private let streamLock = NSLock()
+    
     /// 数据接收工作队列
     private let workQueue = DispatchQueue(label: "com.obdconnect.mfi.work", qos: .userInitiated)
     
@@ -75,6 +98,15 @@ public class MFiManager: NSObject {
     
     /// 是否应该停止流处理
     private var shouldStopStreaming = false
+    
+    /// 流线程的 CFRunLoop 引用（用于从外部唤醒 RunLoop）
+    private var streamRunLoop: CFRunLoop?
+    
+    /// 流线程清理完成信号量
+    private var cleanupSemaphore: DispatchSemaphore?
+    
+    /// 是否正在关闭 session（重入保护）
+    private var isClosingSession = false
     
     // MARK: - Callbacks
     
@@ -140,7 +172,14 @@ public class MFiManager: NSObject {
         // 检查是否是当前连接的设备
         if accessory.serialNumber == connectedAccessory?.serialNumber {
             connectionState = .disconnected
-            closeSession()
+            
+            // 异步关闭 session，避免阻塞主线程
+            // closeSession 内部使用 semaphore 等待流线程清理，
+            // 如果在主线程同步调用可能导致 UI 卡顿
+            workQueue.async { [weak self] in
+                self?.closeSession()
+            }
+            
             onDeviceDisconnect?()
         }
         
@@ -203,12 +242,13 @@ public class MFiManager: NSObject {
         completion: @escaping (Result<Bool, ConnectError>) -> Void
     ) {
         // 检查当前状态
-        guard connectionState != .connected else {
+        let currentState = connectionState
+        guard currentState != .connected else {
             completion(.success(true))
             return
         }
         
-        guard connectionState != .connecting else {
+        guard currentState != .connecting else {
             completion(.failure(.connecting))
             return
         }
@@ -244,15 +284,18 @@ public class MFiManager: NSObject {
         workQueue.async { [weak self] in
             guard let self = self else { return }
             
+            // 如果有旧 session，先清理
+            if self.session != nil {
+                self.closeSession()
+            }
+            
             guard let session = EASession(accessory: targetAccessory, forProtocol: protocolString) else {
-                DispatchQueue.main.async {
-                    self.connectionState = .disconnected
-                    completion(.failure(.connectionFailed(underlyingError: NSError(
-                        domain: "MFiManager",
-                        code: -3,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create session"]
-                    ))))
-                }
+                self.connectionState = .disconnected
+                completion(.failure(.connectionFailed(underlyingError: NSError(
+                    domain: "MFiManager",
+                    code: -3,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to create session"]
+                ))))
                 return
             }
             
@@ -264,10 +307,8 @@ public class MFiManager: NSObject {
             // 配置流
             self.setupStreams()
             
-            DispatchQueue.main.async {
-                self.connectionState = .connected
-                completion(.success(true))
-            }
+            self.connectionState = .connected
+            completion(.success(true))
         }
     }
     
@@ -294,12 +335,13 @@ public class MFiManager: NSObject {
     
     /// 重新连接到上次连接的设备
     public func reconnect(completion: @escaping (Result<Bool, ConnectError>) -> Void) {
-        guard connectionState != .connected else {
+        let currentState = connectionState
+        guard currentState != .connected else {
             completion(.success(true))
             return
         }
         
-        guard connectionState != .connecting else {
+        guard currentState != .connecting else {
             completion(.failure(.connecting))
             return
         }
@@ -330,6 +372,9 @@ public class MFiManager: NSObject {
             
             let runLoop = RunLoop.current
             
+            // 保存 CFRunLoop 引用，以便 closeSession 可以唤醒它
+            self.streamRunLoop = CFRunLoopGetCurrent()
+            
             input.delegate = self
             output.delegate = self
             
@@ -344,11 +389,27 @@ public class MFiManager: NSObject {
                 // 继续运行
             }
             
-            // 清理
+            // ===== 清理 - 全部在流线程上执行，避免线程竞争 =====
+            // ExternalAccessory 框架在处理流事件时会访问流/session 对象，
+            // 如果从外部线程关闭流会导致 SIGSEGV。
+            // 所以所有流的 close/remove/nil 操作必须在这里完成。
+            input.delegate = nil
+            output.delegate = nil
             input.close()
             output.close()
             input.remove(from: runLoop, forMode: .default)
             output.remove(from: runLoop, forMode: .default)
+            
+            // 安全清理引用
+            self.streamLock.lock()
+            self.inputStream = nil
+            self.outputStream = nil
+            self.session = nil
+            self.streamRunLoop = nil
+            self.streamLock.unlock()
+            
+            // 通知 closeSession 清理完成
+            self.cleanupSemaphore?.signal()
         }
         
         streamThread?.name = "MFiStreamThread"
@@ -369,47 +430,72 @@ public class MFiManager: NSObject {
             return
         }
         
-        guard let output = outputStream else {
+        guard !shouldStopStreaming else {
+            completion(.failure(.notConnected))
+            return
+        }
+        
+        guard let rl = streamRunLoop else {
             completion(.failure(.sendFailed(underlyingError: NSError(
                 domain: "MFiManager",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Output stream not available"]
+                userInfo: [NSLocalizedDescriptionKey: "Stream not available"]
             ))))
             return
         }
         
-        workQueue.async { [weak self] in
+        // 将写操作调度到流线程上执行
+        // 流（InputStream/OutputStream）的所有操作必须在其被调度的 RunLoop 线程上进行，
+        // 否则会导致线程竞争和 SIGSEGV
+        let writeBlock: @convention(block) () -> Void = { [weak self] in
             guard let self = self else { return }
+            
+            // 在流线程上再次检查状态
+            guard !self.shouldStopStreaming else {
+                completion(.failure(.notConnected))
+                return
+            }
+            
+            guard let output = self.outputStream else {
+                completion(.failure(.sendFailed(underlyingError: NSError(
+                    domain: "MFiManager",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Output stream not available"]
+                ))))
+                return
+            }
             
             self.isWaitingResponse = true
             self.lastReceiveTime = Date()
             
             data.withUnsafeBytes { buffer in
                 guard let pointer = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                    DispatchQueue.main.async {
-                        completion(.failure(.sendFailed(underlyingError: NSError(
-                            domain: "MFiManager",
-                            code: -2,
-                            userInfo: [NSLocalizedDescriptionKey: "Invalid data buffer"]
-                        ))))
-                    }
+                    completion(.failure(.sendFailed(underlyingError: NSError(
+                        domain: "MFiManager",
+                        code: -2,
+                        userInfo: [NSLocalizedDescriptionKey: "Invalid data buffer"]
+                    ))))
                     return
                 }
                 
                 var bytesWritten = 0
-                var totalBytes = data.count
+                let totalBytes = data.count
                 
                 while bytesWritten < totalBytes {
+                    // 发送前检查是否已停止
+                    guard !self.shouldStopStreaming else {
+                        completion(.failure(.notConnected))
+                        return
+                    }
+                    
                     let written = output.write(pointer.advanced(by: bytesWritten), maxLength: totalBytes - bytesWritten)
                     
                     if written < 0 {
-                        DispatchQueue.main.async {
-                            completion(.failure(.sendFailed(underlyingError: output.streamError ?? NSError(
-                                domain: "MFiManager",
-                                code: -3,
-                                userInfo: [NSLocalizedDescriptionKey: "Write failed"]
-                            ))))
-                        }
+                        completion(.failure(.sendFailed(underlyingError: output.streamError ?? NSError(
+                            domain: "MFiManager",
+                            code: -3,
+                            userInfo: [NSLocalizedDescriptionKey: "Write failed"]
+                        ))))
                         return
                     }
                     
@@ -417,41 +503,60 @@ public class MFiManager: NSObject {
                 }
             }
             
-            DispatchQueue.main.async {
-                completion(.success(true))
-            }
+            completion(.success(true))
         }
+        
+        // 使用 CFRunLoopPerformBlock 在流线程的 RunLoop 上执行写操作
+        CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue, writeBlock)
+        CFRunLoopWakeUp(rl)
     }
     
     // MARK: - Disconnect
     
     /// 断开连接
     public func disconnect() {
-        closeSession()
         connectionState = .disconnected
+        closeSession()
     }
     
     private func closeSession() {
+        // 重入保护：防止 closeSession 被并发重复调用
+        streamLock.lock()
+        guard !isClosingSession else {
+            streamLock.unlock()
+            return
+        }
+        isClosingSession = true
+        streamLock.unlock()
+        
+        defer {
+            streamLock.lock()
+            isClosingSession = false
+            streamLock.unlock()
+        }
+        
+        // 1. 标记停止
         shouldStopStreaming = true
         
-        inputStream?.delegate = nil
-        outputStream?.delegate = nil
+        // 2. 准备等待清理完成
+        let semaphore = DispatchSemaphore(value: 0)
+        cleanupSemaphore = semaphore
         
-        // 必须在释放 session 之前显式关闭流！
-        // 否则 EASession dealloc 时发现流仍然开着，
-        // 会报 "unable to close session" 错误，
-        // 导致后续新建 EASession 返回 nil，连接失败。
-        inputStream?.close()
-        outputStream?.close()
+        // 3. 唤醒流线程的 RunLoop，让它退出循环并执行清理
+        if let rl = streamRunLoop {
+            CFRunLoopStop(rl)
+        }
         
-        inputStream = nil
-        outputStream = nil
-        session = nil
-        connectedAccessory = nil
+        // 4. 等待流线程完成清理（最多 3 秒）
+        // 流的 close/remove/nil 全部由流线程自己完成，避免线程竞争
+        if streamThread != nil {
+            _ = semaphore.wait(timeout: .now() + 3.0)
+        }
         
-        // 等待线程结束
-        streamThread?.cancel()
+        // 5. 清理线程引用
+        cleanupSemaphore = nil
         streamThread = nil
+        connectedAccessory = nil
     }
     
     /// 销毁管理器
@@ -475,6 +580,9 @@ public class MFiManager: NSObject {
 extension MFiManager: StreamDelegate {
     
     public func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        // Guard: if streaming has stopped, ignore all events
+        guard !shouldStopStreaming else { return }
+        
         switch eventCode {
         case .hasBytesAvailable:
             guard let input = aStream as? InputStream else { return }
@@ -485,17 +593,21 @@ extension MFiManager: StreamDelegate {
             break
             
         case .errorOccurred:
+            guard !shouldStopStreaming else { return }
             logD("\(TAG): Stream error: \(aStream.streamError?.localizedDescription ?? "unknown")")
             DispatchQueue.main.async { [weak self] in
-                self?.connectionState = .disconnected
-                self?.onDeviceDisconnect?()
+                guard let self = self, self.connectionState != .disconnected else { return }
+                self.connectionState = .disconnected
+                self.onDeviceDisconnect?()
             }
             
         case .endEncountered:
+            guard !shouldStopStreaming else { return }
             logD("\(TAG): Stream ended")
             DispatchQueue.main.async { [weak self] in
-                self?.connectionState = .disconnected
-                self?.onDeviceDisconnect?()
+                guard let self = self, self.connectionState != .disconnected else { return }
+                self.connectionState = .disconnected
+                self.onDeviceDisconnect?()
             }
             
         default:
@@ -504,10 +616,13 @@ extension MFiManager: StreamDelegate {
     }
     
     private func readAvailableBytes(from stream: InputStream) {
+        // Guard: if streaming has stopped, don't read
+        guard !shouldStopStreaming else { return }
+        
         let bufferSize = 4096
         var buffer = [UInt8](repeating: 0, count: bufferSize)
         
-        while stream.hasBytesAvailable {
+        while stream.hasBytesAvailable && !shouldStopStreaming {
             let bytesRead = stream.read(&buffer, maxLength: bufferSize)
             
             if bytesRead > 0 {
@@ -518,7 +633,8 @@ extension MFiManager: StreamDelegate {
                 
                 // 通知接收到数据
                 DispatchQueue.main.async { [weak self] in
-                    self?.onDataReceived?(data)
+                    guard let self = self, !self.shouldStopStreaming else { return }
+                    self.onDataReceived?(data)
                 }
             } else if bytesRead < 0 {
                 logD("\(TAG): Read error: \(stream.streamError?.localizedDescription ?? "unknown")")
