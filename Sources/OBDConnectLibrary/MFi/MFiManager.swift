@@ -436,6 +436,14 @@ public class MFiManager: NSObject {
         
         inputStream?.delegate = nil
         outputStream?.delegate = nil
+        
+        // 必须在释放 session 之前显式关闭流！
+        // 否则 EASession dealloc 时发现流仍然开着，
+        // 会报 "unable to close session" 错误，
+        // 导致后续新建 EASession 返回 nil，连接失败。
+        inputStream?.close()
+        outputStream?.close()
+        
         inputStream = nil
         outputStream = nil
         session = nil
