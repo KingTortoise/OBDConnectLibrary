@@ -47,11 +47,14 @@ final class ConnectManagerTests: XCTestCase {
         XCTAssertNotNil(context?.port, "Port should not be nil")
     }
     
-    /// 测试经典蓝牙（iOS 不支持）
+    /// 测试 MFi/经典蓝牙管理器初始化
     func testInitManagerClassicBT() {
         let context = ConnectManager.shared.initManager(type: .bt)
-        
-        XCTAssertNil(context, "Classic Bluetooth should return nil on iOS")
+
+        XCTAssertNotNil(context, "MFi context should not be nil")
+        XCTAssertEqual(context?.type, .bt, "Context type should be Classic Bluetooth/MFi")
+        XCTAssertFalse(context?.isOpen ?? true, "Context should not be open initially")
+        XCTAssertNotNil(context?.port, "Port should not be nil")
     }
     
     /// 测试重复初始化相同类型

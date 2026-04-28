@@ -1,8 +1,7 @@
 
-# OBDConnectLibrary.podspec
 Pod::Spec.new do |s|
   s.name             = 'OBDConnectLibrary'
-  s.version          = '1.0.7'
+  s.version          = '1.0.8'
   s.summary          = 'A Swift library for OBD communication.'
   s.description      = <<-DESC
                         OBDConnectLibrary provides a simplified API for interacting
@@ -19,15 +18,10 @@ Pod::Spec.new do |s|
 
   # 源代码位置 - 包含所有子目录
   s.source_files = 'Sources/OBDConnectLibrary/**/*.swift'
+  s.resource_bundles = { 'OBDConnectLibrary_Privacy' => ['Sources/OBDConnectLibrary/PrivacyInfo.xcprivacy'] }
 
   # 系统框架依赖
   s.frameworks = 'CoreBluetooth', 'ExternalAccessory'
   
-  # 如果需要在 Info.plist 中添加权限描述
-  s.user_target_xcconfig = {
-    'SWIFT_VERSION' => '5.7',
-    'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) COCOAPODS=1',
-    'INFO_PLIST_FILE' => '$(SRCROOT)/Pods/Target Support Files/OBDConnectLibrary/OBDConnectLibrary-Info.plist'
-  }
-  
+
 end
